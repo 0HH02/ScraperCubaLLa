@@ -25,6 +25,7 @@ playwright install chromium
 | `run_pipeline.py` | Pipeline automático completo (dependencias → scrape → GitHub) |
 | `Iniciar_Scraper.bat` | Lanzador para doble clic en Windows |
 | `Iniciar_Scraper.command` | Lanzador para doble clic en macOS |
+| `Iniciar_Scraper.sh` | Lanzador en Linux (terminal o doble clic) |
 
 La base de datos local por defecto es `cuballama_market.db` y se versiona en Git cuando usas el pipeline automático.
 
@@ -44,7 +45,25 @@ chmod +x Iniciar_Scraper.command
 
 Luego haz **doble clic** en `Iniciar_Scraper.command` (se abre Terminal automáticamente). Si macOS lo bloquea, clic derecho → **Abrir** → confirmar.
 
-En ambos sistemas el pipeline hará lo siguiente, mostrando el progreso en la terminal:
+### Linux
+
+Los archivos `.bat` **no funcionan** en Linux (son de Windows). Usa `Iniciar_Scraper.sh`.
+
+La primera vez, dale permiso de ejecución:
+
+```bash
+chmod +x Iniciar_Scraper.sh
+```
+
+Luego ejecuta:
+
+```bash
+./Iniciar_Scraper.sh
+```
+
+En algunos entornos de escritorio (GNOME, KDE, etc.) también puedes hacer doble clic si el archivo está marcado como ejecutable y el gestor de archivos abre scripts en una terminal.
+
+En Windows, macOS y Linux el pipeline hará lo siguiente, mostrando el progreso en la terminal:
 
 1. **Dependencias** — Comprueba Python 3.11+, instala `requirements.txt` y Chromium de Playwright si faltan.
 2. **Base de datos** — Crea `cuballama_market.db` si no existe; si ya existe, muestra resumen (tiendas, productos, pendientes).
