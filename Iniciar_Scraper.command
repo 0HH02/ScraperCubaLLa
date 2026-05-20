@@ -1,5 +1,6 @@
 #!/bin/bash
-# Lanzador macOS: doble clic abre Terminal y ejecuta el pipeline completo.
+# Lanzador macOS: doble clic abre Terminal y ejecuta run_pipeline.py
+# (mismo flujo que Iniciar_Scraper.bat: menú nueva/continuar, scrape, GitHub).
 set -o pipefail
 
 cd "$(dirname "$0")" || exit 1

@@ -63,6 +63,26 @@ def reset_productos_y_tiendas(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def clear_all_data(db_path: Path) -> tuple[int, int]:
+    """Borra todas las tiendas y productos. Retorna (tiendas_borradas, productos_borrados)."""
+    with get_connection(db_path) as conn:
+        n_tiendas = contar_tiendas(conn)
+        n_productos = contar_productos(conn)
+        conn.execute("DELETE FROM Producto")
+        conn.execute("DELETE FROM Tienda")
+        conn.execute(
+            "DELETE FROM sqlite_sequence WHERE name IN ('Tienda', 'Producto')"
+        )
+        conn.commit()
+    return n_tiendas, n_productos
+
+
+def contar_tiendas_visitadas(conn: sqlite3.Connection) -> int:
+    return conn.execute(
+        "SELECT COUNT(*) FROM Tienda WHERE scrape_completada = 1"
+    ).fetchone()[0]
+
+
 def upsert_tiendas(
     conn: sqlite3.Connection, tiendas: list[tuple[str, str]]
 ) -> tuple[int, int]:

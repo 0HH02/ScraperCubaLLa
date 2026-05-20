@@ -48,9 +48,12 @@ En ambos sistemas el pipeline hará lo siguiente, mostrando el progreso en la te
 
 1. **Dependencias** — Comprueba Python 3.11+, instala `requirements.txt` y Chromium de Playwright si faltan.
 2. **Base de datos** — Crea `cuballama_market.db` si no existe; si ya existe, muestra resumen (tiendas, productos, pendientes).
-3. **Tiendas** — Ejecuta el scraper de tiendas con navegador visible (`--solo-tiendas --headed`).
-4. **Productos** — Ejecuta el scraper de productos con navegador visible (`--solo-productos --headed`).
-5. **GitHub** — Hace commit y `git push` de todos los cambios, **incluida la base de datos**.
+3. **Modo de ejecución** — Pregunta qué quieres hacer:
+   - **[1] Nueva ejecución** — Borra todas las tiendas y productos de la BD y empieza de cero (pide confirmación si ya hay datos).
+   - **[2] Continuar** — Conserva la BD. Omite el scrape de la lista de tiendas. Solo scrapea productos de tiendas **no visitadas** (`scrape_completada = 0`), empezando por la primera pendiente.
+4. **Tiendas** — Solo en modo nueva: recorre la web y guarda tiendas (`--solo-tiendas --headed`).
+5. **Productos** — Scrapea productos de tiendas pendientes (`--solo-productos --headed`).
+6. **GitHub** — Hace commit y `git push` de todos los cambios, **incluida la base de datos**.
 
 Requisitos adicionales para el paso 5: tener [Git](https://git-scm.com/) instalado y acceso configurado al remoto (`git push` sin pedir credenciales, o un gestor de credenciales ya configurado).
 

@@ -241,6 +241,82 @@ def step_check_and_install_deps(python: str) -> None:
     _ok("Todas las dependencias están listas")
 
 
+def step_choose_execution_mode() -> str:
+    """Pregunta si nueva ejecución (borra todo) o continuar la última."""
+    print()
+    _line("═")
+    print(_c("  MODO DE EJECUCIÓN", MAGENTA + BOLD))
+    _line("═")
+    print()
+
+    with db.get_connection(DB_PATH) as conn:
+        n_tiendas = db.contar_tiendas(conn)
+        n_productos = db.contar_productos(conn)
+        visitadas = db.contar_tiendas_visitadas(conn)
+        pendientes = db.get_tiendas_pendientes(conn)
+        primera = pendientes[0] if pendientes else None
+
+    print(_c("  [1]  Nueva ejecución", BOLD))
+    print(_c("       Borra todas las tiendas y productos y empieza de cero.", DIM))
+    print()
+    print(_c("  [2]  Continuar última ejecución", BOLD))
+    print(_c("       Conserva la BD. Solo scrapea productos de tiendas no visitadas.", DIM))
+    if primera:
+        print(
+            _c(f"       Siguiente tienda pendiente: {primera['Nombre']}", DIM)
+        )
+    print()
+
+    if n_tiendas > 0:
+        print(_c("  Estado actual de la BD:", DIM))
+        _sub(f"Tiendas: {n_tiendas}  |  Visitadas: {visitadas}  |  Pendientes: {len(pendientes)}")
+        _sub(f"Productos: {n_productos}")
+        print()
+
+    while True:
+        try:
+            choice = input(
+                _c("  Elige una opción [1/2]: ", CYAN + BOLD)
+            ).strip()
+        except EOFError:
+            choice = "2" if n_tiendas > 0 else "1"
+
+        if choice == "1":
+            if n_tiendas > 0 or n_productos > 0:
+                _warn(
+                    f"Se eliminarán {n_tiendas} tiendas y {n_productos} productos."
+                )
+                confirm = input(
+                    _c("  ¿Confirmar borrado? (s/N): ", YELLOW)
+                ).strip().lower()
+                if confirm not in ("s", "si", "sí", "y", "yes"):
+                    _info("Cancelado. Vuelve a elegir.")
+                    continue
+                borradas_t, borrados_p = db.clear_all_data(DB_PATH)
+                _ok(
+                    f"BD vaciada: {borradas_t} tiendas y {borrados_p} productos eliminados"
+                )
+            else:
+                _ok("BD ya estaba vacía — empezando de cero")
+            print()
+            _ok("Modo seleccionado: NUEVA ejecución")
+            return "fresh"
+
+        if choice == "2":
+            if n_tiendas == 0:
+                _warn("No hay tiendas en la BD; se usará nueva ejecución.")
+                return "fresh"
+            print()
+            _ok("Modo seleccionado: CONTINUAR ejecución")
+            _info(
+                f"Se ignoran {visitadas} tienda(s) ya visitadas; "
+                f"pendientes: {len(pendientes)}"
+            )
+            return "continue"
+
+        _err("Opción no válida. Escribe 1 o 2.")
+
+
 def step_ensure_database() -> None:
     _step_header(2, "Base de datos SQLite")
 
@@ -281,9 +357,15 @@ def _setup_scraper_logging() -> None:
     )
 
 
-def step_scrape_stores() -> None:
+def step_scrape_stores(mode: str) -> None:
+    if mode == "continue":
+        _step_header(3, "Scraping de TIENDAS — omitido (modo continuar)")
+        _info("Las tiendas ya guardadas se conservan sin cambios.")
+        _info("Puedes añadir tiendas nuevas ejecutando una nueva ejecución [1].")
+        return
+
     _step_header(3, "Scraping de TIENDAS (navegador visible)")
-    _info("Modo: --solo-tiendas --headed")
+    _info("Modo: nueva ejecución — --solo-tiendas --headed")
     _warn("No cierres la ventana del navegador hasta que termine esta fase")
     print()
 
@@ -299,12 +381,22 @@ def step_scrape_stores() -> None:
     _ok(f"Tiendas actualizadas en BD — total: {total} ({elapsed:.0f}s)")
 
 
-def step_scrape_products() -> None:
+def step_scrape_products(mode: str) -> None:
     _step_header(4, "Scraping de PRODUCTOS (navegador visible)")
     _info("Modo: --solo-productos --headed")
 
     with db.get_connection(DB_PATH) as conn:
-        pendientes = len(db.get_tiendas_pendientes(conn))
+        filas = db.get_tiendas_pendientes(conn)
+        pendientes = len(filas)
+        visitadas = db.contar_tiendas_visitadas(conn)
+
+    if mode == "continue":
+        _info(
+            f"Continuar: {visitadas} tienda(s) visitadas se ignoran; "
+            f"{pendientes} pendiente(s)"
+        )
+        if filas:
+            _info(f"Empezando por: {filas[0]['Nombre']}")
 
     if pendientes == 0:
         _warn("No hay tiendas pendientes; se omitirá el scraping de productos.")
@@ -400,8 +492,9 @@ def main() -> int:
     try:
         step_check_and_install_deps(python)
         step_ensure_database()
-        step_scrape_stores()
-        step_scrape_products()
+        mode = step_choose_execution_mode()
+        step_scrape_stores(mode)
+        step_scrape_products(mode)
         step_push_to_github()
         _finale(True)
         return 0
