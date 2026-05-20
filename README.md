@@ -24,12 +24,27 @@ playwright install chromium
 | `import_stores.py` | Importa tiendas desde `discovered_stores.json` a la BD |
 | `run_pipeline.py` | Pipeline automático completo (dependencias → scrape → GitHub) |
 | `Iniciar_Scraper.bat` | Lanzador para doble clic en Windows |
+| `Iniciar_Scraper.command` | Lanzador para doble clic en macOS |
 
 La base de datos local por defecto es `cuballama_market.db` y se versiona en Git cuando usas el pipeline automático.
 
 ## Ejecución rápida (doble clic)
 
-En Windows, haz **doble clic** en `Iniciar_Scraper.bat`. El pipeline hará lo siguiente, mostrando el progreso en la terminal:
+### Windows
+
+Haz **doble clic** en `Iniciar_Scraper.bat`.
+
+### macOS
+
+La primera vez, dale permiso de ejecución (solo una vez):
+
+```bash
+chmod +x Iniciar_Scraper.command
+```
+
+Luego haz **doble clic** en `Iniciar_Scraper.command` (se abre Terminal automáticamente). Si macOS lo bloquea, clic derecho → **Abrir** → confirmar.
+
+En ambos sistemas el pipeline hará lo siguiente, mostrando el progreso en la terminal:
 
 1. **Dependencias** — Comprueba Python 3.11+, instala `requirements.txt` y Chromium de Playwright si faltan.
 2. **Base de datos** — Crea `cuballama_market.db` si no existe; si ya existe, muestra resumen (tiendas, productos, pendientes).
