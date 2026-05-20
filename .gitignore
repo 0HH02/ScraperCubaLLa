@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 *.db
+!cuballama_market.db
 discovered_stores.json
 discovered_api_urls.txt
 discovered_stores_nuevo.json
