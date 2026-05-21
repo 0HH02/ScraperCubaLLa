@@ -86,35 +86,6 @@ def safe_goto(page: Page, url: str) -> None:
     raise RuntimeError(f"No se pudo cargar {url}") from last_error
 
 
-def scroll_until_stable(
-    page: Page,
-    count_fn,
-    *,
-    max_rounds: int = 60,
-    pause_ms: int = 2000,
-    stable_rounds: int = settings.SCROLL_STABLE_ROUNDS,
-) -> int:
-    """Scroll clásico (sección tiendas en inicio)."""
-    prev_count = -1
-    stable = 0
-    for _ in range(max_rounds):
-        count = count_fn()
-        if count == prev_count:
-            stable += 1
-            if stable >= stable_rounds:
-                break
-        else:
-            stable = 0
-        prev_count = count
-        page.evaluate(
-            "() => window.scrollBy(0, Math.max(window.innerHeight, 600))"
-        )
-        page.wait_for_timeout(pause_ms)
-    page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
-    page.wait_for_timeout(pause_ms)
-    return count_fn()
-
-
 def scroll_collect_until_stable(
     page: Page,
     collect_fn: Callable[[], int],
@@ -233,9 +204,25 @@ def extract_links_from_locator(
     return results
 
 
-def _count_store_links(page: Page, section: Locator) -> int:
-    links = extract_links_from_locator(page, section, _is_store_href)
-    return len(links)
+def _scroll_and_collect_stores(
+    page: Page, root: Locator
+) -> list[tuple[str, str]]:
+    """Scroll incremental en inicio; misma lógica de parada que productos."""
+    seen: dict[str, tuple[str, str]] = {}
+    prev_total = 0
+
+    def collect() -> int:
+        nonlocal prev_total
+        for nombre, link in extract_links_from_locator(page, root, _is_store_href):
+            if link not in seen:
+                seen[link] = (nombre, link)
+        total = len(seen)
+        nuevos = total - prev_total
+        prev_total = total
+        return nuevos
+
+    scroll_collect_until_stable(page, collect)
+    return list(seen.values())
 
 
 def scrape_tiendas(page: Page) -> list[tuple[str, str]]:
@@ -251,22 +238,11 @@ def scrape_tiendas(page: Page) -> list[tuple[str, str]]:
         )
         section = page.locator("body")
 
-    logger.info("Desplazando para cargar todos los negocios...")
-    scroll_until_stable(
-        page,
-        lambda: _count_store_links(page, section),
-    )
-
-    tiendas = extract_links_from_locator(page, section, _is_store_href)
+    logger.info("Desplazando para cargar todos los negocios (scroll incremental)...")
+    tiendas = _scroll_and_collect_stores(page, section)
     if not tiendas:
         logger.info("Pocos resultados en sección; buscando en toda la página...")
-        scroll_until_stable(
-            page,
-            lambda: len(extract_links_from_locator(page, page.locator("body"), _is_store_href)),
-        )
-        tiendas = extract_links_from_locator(
-            page, page.locator("body"), _is_store_href
-        )
+        tiendas = _scroll_and_collect_stores(page, page.locator("body"))
 
     logger.info("Tiendas encontradas: %d", len(tiendas))
     return tiendas
