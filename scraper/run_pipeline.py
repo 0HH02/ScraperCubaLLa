@@ -19,6 +19,7 @@ import db
 from cuballama_scraper import run_scraper
 
 ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = ROOT.parent
 REQUIREMENTS = ROOT / "requirements.txt"
 DB_PATH = settings.DEFAULT_DB_PATH
 GIT_REMOTE = "origin"
@@ -425,15 +426,15 @@ def step_push_to_github() -> None:
     if not shutil.which("git"):
         raise RuntimeError("Git no está instalado o no está en el PATH.")
 
-    if not (ROOT / ".git").is_dir():
+    if not (PROJECT_ROOT / ".git").is_dir():
         raise RuntimeError("Este directorio no es un repositorio Git.")
 
     _info("Añadiendo archivos al staging...")
-    subprocess.run(["git", "add", "-A"], cwd=ROOT, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=PROJECT_ROOT, check=True)
 
     status = subprocess.run(
         ["git", "status", "--porcelain"],
-        cwd=ROOT,
+        cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
         check=True,
@@ -452,13 +453,13 @@ def step_push_to_github() -> None:
 
         msg = f"Actualizar datos scrapeados — {datetime.now().strftime('%Y-%m-%d %H:%M')}"
         _info("Creando commit...")
-        subprocess.run(["git", "commit", "-m", msg], cwd=ROOT, check=True)
+        subprocess.run(["git", "commit", "-m", msg], cwd=PROJECT_ROOT, check=True)
         _ok(f"Commit creado: {msg}")
 
     _info(f"Enviando a {GIT_REMOTE}/{GIT_BRANCH}...")
     push = subprocess.run(
         ["git", "push", GIT_REMOTE, GIT_BRANCH],
-        cwd=ROOT,
+        cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
     )

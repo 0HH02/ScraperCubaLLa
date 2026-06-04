@@ -1,124 +1,50 @@
-# ScraperCubaLLa
+# Cuballama — Mercado
 
-Scraper del mercado de [Cuballama](https://www.cuballama.com/mercado/inicio) con Playwright y SQLite. Extrae tiendas de la sección «Todos los negocios» y los productos de cada tienda.
+Monorepo con dos partes:
 
-## Requisitos
+| Carpeta | Tecnología | Descripción |
+|---------|------------|-------------|
+| `scraper/` | Python + Playwright | Extrae tiendas y productos de Cuballama hacia la BD |
+| *(raíz)* | Node.js + Express | Web para analizar precios de tu catálogo vs. el mercado |
 
-- Python 3.11+
-- [Playwright](https://playwright.dev/python/) (Chromium)
+La base de datos compartida es **`cuballama_market.db`** en la raíz del repositorio.
 
-```bash
-pip install -r requirements.txt
-playwright install chromium
-```
+## Analizador web (Node)
 
-## Estructura del proyecto
+### Requisitos
 
-| Archivo | Descripción |
-|---------|-------------|
-| `run_scraper.py` | Punto de entrada: scraping completo o por fases |
-| `cuballama_scraper.py` | Lógica de navegación y extracción con Playwright |
-| `db.py` | Esquema SQLite y operaciones de persistencia |
-| `settings.py` | URLs, timeouts y rutas por defecto |
-| `discover_stores.py` | Herramienta de exploración (navegador visible) para listar tiendas |
-| `import_stores.py` | Importa tiendas desde `discovered_stores.json` a la BD |
-| `run_pipeline.py` | Pipeline automático completo (dependencias → scrape → GitHub) |
-| `Iniciar_Scraper.bat` | Lanzador para doble clic en Windows |
-| `Iniciar_Scraper.command` | Lanzador para doble clic en macOS |
-| `Iniciar_Scraper.sh` | Lanzador en Linux (terminal o doble clic) |
+- Node.js 18+
+- `cuballama_market.db` en la raíz (generada por el scraper)
 
-La base de datos local por defecto es `cuballama_market.db` y se versiona en Git cuando usas el pipeline automático.
+### Instalación y ejecución
 
-## Ejecución rápida (doble clic)
-
-### Windows
-
-Haz **doble clic** en `Iniciar_Scraper.bat`.
-
-### macOS
-
-La primera vez, dale permiso de ejecución (solo una vez):
+Si un `npm install` anterior falló (p. ej. con `better-sqlite3`), borra primero `node_modules` y `package-lock.json`.
 
 ```bash
-chmod +x Iniciar_Scraper.command
+npm install
+npm start
 ```
 
-Luego haz **doble clic** en `Iniciar_Scraper.command` (se abre Terminal automáticamente). Si macOS lo bloquea, clic derecho → **Abrir** → confirmar.
+La BD se lee con **sql.js** (JavaScript puro, sin compilar módulos nativos ni Visual Studio).
 
-### Linux
+Abre [http://localhost:3000](http://localhost:3000).
 
-Los archivos `.bat` **no funcionan** en Linux (son de Windows). Usa `Iniciar_Scraper.sh`.
+### Excel de entrada
 
-La primera vez, dale permiso de ejecución:
+Compatible con el formato **Inventrio** (`CODIGO`, `MERCANCIA`, `P.Venta`, `CANTIDAD` en una fila de encabezados, aunque haya filas previas de título) y con columnas genéricas (`código`, `nombre`, `precio de venta`, `cantidad` / `stock` / `inventario`).
 
-```bash
-chmod +x Iniciar_Scraper.sh
-```
+**Precio en Cuballama (USD):** `(P.Venta ÷ tipo de cambio USD) × 1.4`
 
-Luego ejecuta:
+### Criterio de búsqueda en el mercado
 
-```bash
-./Iniciar_Scraper.sh
-```
+Para cada producto del Excel se buscan publicaciones en Cuballama cuyo **nombre contiene el nombre del producto del catálogo** (sin distinguir mayúsculas ni acentos). Se excluyen anuncios con «combo» en el título.
 
-En algunos entornos de escritorio (GNOME, KDE, etc.) también puedes hacer doble clic si el archivo está marcado como ejecutable y el gestor de archivos abre scripts en una terminal.
+Las **publicaciones semejantes** son las que además superan un umbral de similitud por coincidencia de palabras.
 
-En Windows, macOS y Linux el pipeline hará lo siguiente, mostrando el progreso en la terminal:
+Las distancias en USD se comparan con tu precio Cuballama (verde = mercado más caro, rojo = más barato).
 
-1. **Dependencias** — Comprueba Python 3.11+, instala `requirements.txt` y Chromium de Playwright si faltan.
-2. **Base de datos** — Crea `cuballama_market.db` si no existe; si ya existe, muestra resumen (tiendas, productos, pendientes).
-3. **Modo de ejecución** — Pregunta qué quieres hacer:
-   - **[1] Nueva ejecución** — Borra todas las tiendas y productos de la BD y empieza de cero (pide confirmación si ya hay datos).
-   - **[2] Continuar** — Conserva la BD. Omite el scrape de la lista de tiendas. Solo scrapea productos de tiendas **no visitadas** (`scrape_completada = 0`), empezando por la primera pendiente.
-4. **Tiendas** — Solo en modo nueva: recorre la web y guarda tiendas (`--solo-tiendas --headed`).
-5. **Productos** — Scrapea productos de tiendas pendientes (`--solo-productos --headed`).
-6. **GitHub** — Hace commit y `git push` de todos los cambios, **incluida la base de datos**.
+### Scraper
 
-Requisitos adicionales para el paso 5: tener [Git](https://git-scm.com/) instalado y acceso configurado al remoto (`git push` sin pedir credenciales, o un gestor de credenciales ya configurado).
+Ver documentación en [`scraper/README.md`](scraper/README.md).
 
-```bash
-# Equivalente manual desde la terminal
-python run_pipeline.py
-```
-
-## Uso manual por fases
-
-Scraping completo (tiendas + productos pendientes):
-
-```bash
-python run_scraper.py
-```
-
-Solo tiendas:
-
-```bash
-python run_scraper.py --solo-tiendas
-```
-
-Solo productos de tiendas ya en la BD:
-
-```bash
-python run_scraper.py --solo-productos
-```
-
-Depuración con navegador visible:
-
-```bash
-python run_scraper.py --headed -v
-```
-
-Descubrir tiendas manualmente (genera `discovered_stores.json`):
-
-```bash
-python discover_stores.py
-```
-
-Importar ese JSON a la base de datos:
-
-```bash
-python import_stores.py --json discovered_stores.json
-```
-
-## Licencia
-
-Uso personal / educativo. Respeta los términos del sitio web objetivo.
+En Windows: doble clic en `scraper/Iniciar_Scraper.bat`.

@@ -3,7 +3,7 @@ from pathlib import Path
 BASE_URL = "https://www.cuballama.com"
 INICIO_URL = f"{BASE_URL}/mercado/inicio"
 
-DEFAULT_DB_PATH = Path(__file__).parent / "cuballama_market.db"
+DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "cuballama_market.db"
 
 DEFAULT_TIMEOUT_MS = 90_000
 SCROLL_PAUSE_MS = 400

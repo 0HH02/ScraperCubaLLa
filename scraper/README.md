@@ -1,0 +1,124 @@
+# ScraperCubaLLa
+
+Scraper del mercado de [Cuballama](https://www.cuballama.com/mercado/inicio) con Playwright y SQLite. Extrae tiendas de la sección «Todos los negocios» y los productos de cada tienda.
+
+## Requisitos
+
+- Python 3.11+
+- [Playwright](https://playwright.dev/python/) (Chromium)
+
+```bash
+pip install -r requirements.txt
+playwright install chromium
+```
+
+## Estructura del proyecto
+
+| Archivo | Descripción |
+|---------|-------------|
+| `run_scraper.py` | Punto de entrada: scraping completo o por fases |
+| `cuballama_scraper.py` | Lógica de navegación y extracción con Playwright |
+| `db.py` | Esquema SQLite y operaciones de persistencia |
+| `settings.py` | URLs, timeouts y rutas por defecto |
+| `discover_stores.py` | Herramienta de exploración (navegador visible) para listar tiendas |
+| `import_stores.py` | Importa tiendas desde `discovered_stores.json` a la BD |
+| `run_pipeline.py` | Pipeline automático completo (dependencias → scrape → GitHub) |
+| `Iniciar_Scraper.bat` | Lanzador para doble clic en Windows |
+| `Iniciar_Scraper.command` | Lanzador para doble clic en macOS |
+| `Iniciar_Scraper.sh` | Lanzador en Linux (terminal o doble clic) |
+
+La base de datos compartida está en la raíz del repositorio: `../cuballama_market.db`. Se versiona en Git cuando usas el pipeline automático.
+
+## Ejecución rápida (doble clic)
+
+### Windows
+
+Haz **doble clic** en `Iniciar_Scraper.bat`.
+
+### macOS
+
+La primera vez, dale permiso de ejecución (solo una vez):
+
+```bash
+chmod +x Iniciar_Scraper.command
+```
+
+Luego haz **doble clic** en `Iniciar_Scraper.command` (se abre Terminal automáticamente). Si macOS lo bloquea, clic derecho → **Abrir** → confirmar.
+
+### Linux
+
+Los archivos `.bat` **no funcionan** en Linux (son de Windows). Usa `Iniciar_Scraper.sh`.
+
+La primera vez, dale permiso de ejecución:
+
+```bash
+chmod +x Iniciar_Scraper.sh
+```
+
+Luego ejecuta:
+
+```bash
+./Iniciar_Scraper.sh
+```
+
+En algunos entornos de escritorio (GNOME, KDE, etc.) también puedes hacer doble clic si el archivo está marcado como ejecutable y el gestor de archivos abre scripts en una terminal.
+
+En Windows, macOS y Linux el pipeline hará lo siguiente, mostrando el progreso en la terminal:
+
+1. **Dependencias** — Comprueba Python 3.11+, instala `requirements.txt` y Chromium de Playwright si faltan.
+2. **Base de datos** — Crea `cuballama_market.db` si no existe; si ya existe, muestra resumen (tiendas, productos, pendientes).
+3. **Modo de ejecución** — Pregunta qué quieres hacer:
+   - **[1] Nueva ejecución** — Borra todas las tiendas y productos de la BD y empieza de cero (pide confirmación si ya hay datos).
+   - **[2] Continuar** — Conserva la BD. Omite el scrape de la lista de tiendas. Solo scrapea productos de tiendas **no visitadas** (`scrape_completada = 0`), empezando por la primera pendiente.
+4. **Tiendas** — Solo en modo nueva: recorre la web y guarda tiendas (`--solo-tiendas --headed`).
+5. **Productos** — Scrapea productos de tiendas pendientes (`--solo-productos --headed`).
+6. **GitHub** — Hace commit y `git push` de todos los cambios, **incluida la base de datos**.
+
+Requisitos adicionales para el paso 5: tener [Git](https://git-scm.com/) instalado y acceso configurado al remoto (`git push` sin pedir credenciales, o un gestor de credenciales ya configurado).
+
+```bash
+# Equivalente manual desde la terminal
+python run_pipeline.py
+```
+
+## Uso manual por fases
+
+Scraping completo (tiendas + productos pendientes):
+
+```bash
+python run_scraper.py
+```
+
+Solo tiendas:
+
+```bash
+python run_scraper.py --solo-tiendas
+```
+
+Solo productos de tiendas ya en la BD:
+
+```bash
+python run_scraper.py --solo-productos
+```
+
+Depuración con navegador visible:
+
+```bash
+python run_scraper.py --headed -v
+```
+
+Descubrir tiendas manualmente (genera `discovered_stores.json`):
+
+```bash
+python discover_stores.py
+```
+
+Importar ese JSON a la base de datos:
+
+```bash
+python import_stores.py --json discovered_stores.json
+```
+
+## Licencia
+
+Uso personal / educativo. Respeta los términos del sitio web objetivo.

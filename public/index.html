@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Competitividad de precios — Cuballama</title>
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+
+  <body>
+    <a class="skip-link" href="#main">Saltar al contenido</a>
+
+    <header class="app-bar">
+      <div class="app-bar__brand">
+        <span class="app-bar__mark" aria-hidden="true">₵</span>
+        <div class="app-bar__titles">
+          <h1>Competitividad de precios</h1>
+          <p>Tus precios frente al mercado de Cuballama</p>
+        </div>
+      </div>
+
+      <div class="app-bar__actions">
+        <span id="market-badge" class="badge" aria-live="polite">Cargando mercado…</span>
+        <button
+          type="button"
+          id="settings-toggle"
+          class="btn btn--ghost"
+          aria-controls="settings-panel"
+          aria-expanded="true"
+        >
+          <span class="btn__icon" aria-hidden="true">⚙</span>
+          Configuración
+        </button>
+      </div>
+    </header>
+
+    <main id="main" class="app-main">
+      <!-- Configuración: secundaria y colapsable -->
+      <section
+        class="panel settings-panel"
+        id="settings-panel"
+        aria-label="Configuración del análisis"
+      >
+        <form id="upload-form" class="settings-grid">
+          <div class="field">
+            <label class="field__label" for="excel-file">Inventario (Excel)</label>
+            <span class="field__hint">Columnas: CODIGO, MERCANCIA, P.Venta (formato Inventrio)</span>
+            <input id="excel-file" name="file" type="file" accept=".xlsx,.xls,.csv" />
+            <span id="cached-file-hint" class="field__note hidden"></span>
+          </div>
+
+          <div class="field">
+            <label class="field__label" for="tipo-cambio">Moneda local por 1 USD</label>
+            <span class="field__hint">Ej. 400 → (P.Venta ÷ 400) × 1.4</span>
+            <input
+              id="tipo-cambio"
+              name="tipoCambio"
+              type="number"
+              step="any"
+              min="1"
+              inputmode="decimal"
+              placeholder="Ej. 400"
+              required
+            />
+          </div>
+
+          <div class="field field--action">
+            <button type="submit" id="analyze-btn" class="btn btn--primary">
+              Analizar catálogo
+            </button>
+            <p id="status" class="status" role="status" aria-live="polite"></p>
+          </div>
+        </form>
+
+        <details class="market-search" id="market-search-panel">
+          <summary>Buscar en la base de Cuballama</summary>
+          <form id="market-search-form" class="market-search__form">
+            <label class="sr-only" for="market-search-input">Buscar productos en el mercado</label>
+            <input
+              id="market-search-input"
+              type="search"
+              placeholder="Palabras del nombre, ej. lavadora semiautomatica"
+              autocomplete="off"
+            />
+            <button type="submit" id="market-search-btn" class="btn btn--ghost">Buscar</button>
+          </form>
+          <p id="market-search-status" class="status" role="status" aria-live="polite"></p>
+          <div class="market-search__results hidden" id="market-search-results-wrap">
+            <div class="table-wrap market-search__table-wrap">
+              <table id="market-search-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Nombre del producto</th>
+                    <th class="num" scope="col">Precio</th>
+                    <th scope="col">Tienda</th>
+                    <th scope="col">Link</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <!-- Dashboard de competitividad: protagonista -->
+      <section class="dashboard" id="dashboard-section" aria-label="Análisis de competitividad">
+        <div class="empty-state" id="dashboard-empty">
+          <div class="empty-state__icon" aria-hidden="true">📊</div>
+          <h2>Aún no hay análisis</h2>
+          <p>Sube tu inventario en <strong>Configuración</strong> para comparar tus precios con el mercado.</p>
+          <button type="button" class="btn btn--primary" id="empty-cta">Abrir configuración</button>
+        </div>
+
+        <div class="dashboard__content hidden" id="dashboard-content">
+          <div class="kpi-row" id="kpi-row"></div>
+
+          <div class="chart-grid">
+            <article class="panel chart-card">
+              <header class="chart-card__head">
+                <h2>Distribución de competitividad</h2>
+                <p>Cuántos productos caen en cada nivel frente al mercado.</p>
+              </header>
+              <div class="chart-card__body" id="chart-breakdown"></div>
+            </article>
+
+            <article class="panel chart-card">
+              <header class="chart-card__head">
+                <h2>Mayores brechas vs la mediana</h2>
+                <p>Verde: más barato que el mercado · Rojo: más caro.</p>
+              </header>
+              <div class="chart-card__body" id="chart-opportunities"></div>
+            </article>
+          </div>
+
+          <article class="panel table-card">
+            <header class="table-card__head">
+              <h2>Comparativa por producto</h2>
+              <div class="search">
+                <span class="search__icon" aria-hidden="true">⌕</span>
+                <input
+                  id="filter"
+                  type="search"
+                  placeholder="Filtrar por código o nombre…"
+                  autocomplete="off"
+                  aria-label="Filtrar productos"
+                />
+              </div>
+            </header>
+
+            <div
+              class="compet-filters"
+              id="compet-filters"
+              role="toolbar"
+              aria-label="Filtrar por competitividad"
+            ></div>
+
+            <div class="table-wrap">
+              <table id="results-table">
+                <thead>
+                  <tr>
+                    <th class="sortable" data-sort="nombre" scope="col">
+                      Producto <span class="sort-icon" aria-hidden="true"></span>
+                    </th>
+                    <th class="sortable" data-sort="competitividad" scope="col">
+                      Competitividad <span class="sort-icon" aria-hidden="true"></span>
+                    </th>
+                    <th class="num sortable" data-sort="inventario" scope="col">
+                      Inventario <span class="sort-icon" aria-hidden="true"></span>
+                    </th>
+                    <th class="num sortable" data-sort="precioCuballama" scope="col">
+                      Tu precio <span class="sort-icon" aria-hidden="true"></span>
+                    </th>
+                    <th class="num sortable" data-sort="distanciaMin" scope="col">
+                      Mín. mercado <span class="sort-icon" aria-hidden="true"></span>
+                    </th>
+                    <th class="num sortable" data-sort="distanciaMedio" scope="col">
+                      Mediana <span class="sort-icon" aria-hidden="true"></span>
+                    </th>
+                    <th class="num sortable" data-sort="cantidadPublicaciones" scope="col">
+                      Pub. <span class="sort-icon" aria-hidden="true"></span>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <!-- Detalle de un producto -->
+      <section class="panel detail-panel hidden" id="detail-section" aria-label="Detalle del producto">
+        <div class="detail-header">
+          <button type="button" id="back-btn" class="btn btn--secondary">← Volver</button>
+          <div class="detail-header__titles">
+            <h2 id="detail-title"></h2>
+            <p id="detail-meta" class="muted"></p>
+          </div>
+          <span id="detail-verdict" class="pill"></span>
+        </div>
+
+        <div class="detail-stats" id="detail-stats"></div>
+
+        <div class="chart-grid">
+          <article class="panel chart-card chart-card--inset">
+            <header class="chart-card__head">
+              <h3>Tu precio vs mercado</h3>
+            </header>
+            <div class="chart-card__body" id="chart-comparison"></div>
+          </article>
+          <article class="panel chart-card chart-card--inset">
+            <header class="chart-card__head">
+              <h3>Distribución de precios del mercado</h3>
+            </header>
+            <div class="chart-card__body" id="chart-histogram"></div>
+          </article>
+        </div>
+
+        <details class="terms-box" id="detail-terms-box">
+          <summary>Criterio de búsqueda y filtros</summary>
+          <div id="detail-terms"></div>
+        </details>
+
+        <button type="button" id="similar-btn" class="btn btn--secondary">
+          Buscar productos similares
+        </button>
+
+        <h3 id="detail-publications-title" class="section-subtitle">Publicaciones encontradas</h3>
+        <div class="table-wrap detail-table-wrap">
+          <table id="detail-table">
+            <thead>
+              <tr>
+                <th scope="col">Nombre del producto</th>
+                <th class="num" scope="col">Precio (USD)</th>
+                <th scope="col">Link</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Productos similares -->
+      <section class="panel similar-panel hidden" id="similar-section" aria-label="Productos similares">
+        <div class="detail-header">
+          <button type="button" id="similar-back-btn" class="btn btn--secondary">← Volver</button>
+          <div class="detail-header__titles">
+            <h2 id="similar-title"></h2>
+            <p id="similar-meta" class="muted"></p>
+          </div>
+        </div>
+
+        <p id="similar-status" class="status" role="status" aria-live="polite"></p>
+
+        <details class="terms-box hidden" id="similar-terms-box">
+          <summary>Nombres buscados y filtros</summary>
+          <div id="similar-terms"></div>
+        </details>
+
+        <h3 class="section-subtitle">Subcategorías</h3>
+        <div id="similar-subcategory-cards" class="subcategory-cards"></div>
+
+        <h3 id="similar-subcategory-table-title" class="section-subtitle">
+          Publicaciones de la subcategoría
+        </h3>
+        <div class="table-wrap detail-table-wrap">
+          <table id="similar-table">
+            <thead>
+              <tr>
+                <th scope="col">Nombre del producto</th>
+                <th class="num" scope="col">Precio (USD)</th>
+                <th scope="col">Link</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/apexcharts@3.54.1/dist/apexcharts.min.js"></script>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
