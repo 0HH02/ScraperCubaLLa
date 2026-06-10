@@ -137,26 +137,72 @@ function isUsefulSearchName(value) {
   return words.length > 1 || !GENERIC_SINGLE_TERMS.has(words[0]);
 }
 
-function parseNamesFromText(text) {
-  const trimmed = text.trim();
-  const jsonMatch = trimmed.match(/\[[\s\S]*\]/);
-  if (jsonMatch) {
+function stripMarkdownFences(text) {
+  return String(text)
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```\s*$/i, "")
+    .trim();
+}
+
+function normalizeJsonQuotes(text) {
+  return String(text)
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/[\u2018\u2019]/g, "'");
+}
+
+function unwrapSearchName(value) {
+  let s = String(value).trim();
+  if (!s) return "";
+
+  while (/^[\["'`]|["'`\]]$/.test(s)) {
+    const next = s.replace(/^[\["'`]+/, "").replace(/["'`\]]+$/, "").trim();
+    if (next === s) break;
+    s = next;
+  }
+
+  return s.toLowerCase();
+}
+
+function normalizeParsedNames(values) {
+  return values
+    .map((s) => unwrapSearchName(s))
+    .filter(isUsefulSearchName)
+    .slice(0, MAX_SEARCH_NAMES);
+}
+
+function extractJsonArrayFromText(text) {
+  const cleaned = normalizeJsonQuotes(stripMarkdownFences(text));
+
+  try {
+    const direct = JSON.parse(cleaned);
+    if (Array.isArray(direct)) return direct;
+  } catch {
+    /* ignore */
+  }
+
+  const matches = [...cleaned.matchAll(/\[[\s\S]*?\]/g)];
+  for (let i = matches.length - 1; i >= 0; i--) {
     try {
-      const parsed = JSON.parse(jsonMatch[0]);
-      if (Array.isArray(parsed)) {
-        return parsed
-          .map((s) => String(s).trim().toLowerCase())
-          .filter(isUsefulSearchName)
-          .slice(0, MAX_SEARCH_NAMES);
-      }
+      const parsed = JSON.parse(matches[i][0]);
+      if (Array.isArray(parsed)) return parsed;
     } catch {
       /* ignore */
     }
   }
 
-  return trimmed
+  return null;
+}
+
+function parseNamesFromText(text) {
+  const parsed = extractJsonArrayFromText(text);
+  if (parsed?.length) {
+    return normalizeParsedNames(parsed);
+  }
+
+  return stripMarkdownFences(text)
     .split(/[\n,;]+/)
-    .map((s) => s.replace(/^[-*•\d.)\s]+/, "").trim().toLowerCase())
+    .map((s) => unwrapSearchName(s.replace(/^[-*•\d.)\s]+/, "")))
     .filter(isUsefulSearchName)
     .slice(0, MAX_SEARCH_NAMES);
 }
@@ -166,7 +212,7 @@ function sanitizeNames(names) {
   return [
     ...new Set(
       names
-        .map((s) => String(s).trim().toLowerCase())
+        .map((s) => unwrapSearchName(s))
         .filter(isUsefulSearchName),
     ),
   ].slice(0, MAX_SEARCH_NAMES);

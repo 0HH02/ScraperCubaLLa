@@ -20,6 +20,10 @@
         </div>
       </div>
 
+      <div class="app-bar__kpis hidden" id="header-kpi-wrap" aria-label="Resumen del análisis">
+        <div class="kpi-row kpi-row--header" id="kpi-row"></div>
+      </div>
+
       <div class="app-bar__actions">
         <span id="market-badge" class="badge" aria-live="polite">Cargando mercado…</span>
         <button
@@ -114,131 +118,125 @@
         </div>
 
         <div class="dashboard__content hidden" id="dashboard-content">
-          <div class="kpi-row" id="kpi-row"></div>
-
-          <div class="chart-grid">
-            <article class="panel chart-card">
-              <header class="chart-card__head">
-                <h2>Distribución de competitividad</h2>
-                <p>Cuántos productos caen en cada nivel frente al mercado.</p>
+          <div class="dashboard-layout">
+            <article class="panel table-card">
+              <header class="table-card__head">
+                <h2>Comparativa por producto</h2>
+                <div class="search">
+                  <span class="search__icon" aria-hidden="true">⌕</span>
+                  <input
+                    id="filter"
+                    type="search"
+                    placeholder="Filtrar por código o nombre…"
+                    autocomplete="off"
+                    aria-label="Filtrar productos"
+                  />
+                </div>
               </header>
-              <div class="chart-card__body" id="chart-breakdown"></div>
-            </article>
 
-            <article class="panel chart-card">
-              <header class="chart-card__head">
-                <h2>Mayores brechas vs la mediana</h2>
-                <p>Verde: más barato que el mercado · Rojo: más caro.</p>
-              </header>
-              <div class="chart-card__body" id="chart-opportunities"></div>
-            </article>
-          </div>
+              <div
+                class="compet-filters"
+                id="compet-filters"
+                role="toolbar"
+                aria-label="Filtrar por competitividad"
+              ></div>
 
-          <article class="panel table-card">
-            <header class="table-card__head">
-              <h2>Comparativa por producto</h2>
-              <div class="search">
-                <span class="search__icon" aria-hidden="true">⌕</span>
-                <input
-                  id="filter"
-                  type="search"
-                  placeholder="Filtrar por código o nombre…"
-                  autocomplete="off"
-                  aria-label="Filtrar productos"
-                />
+              <div class="table-wrap">
+                <table id="results-table">
+                  <thead>
+                    <tr>
+                      <th class="sortable" data-sort="nombre" scope="col">
+                        Producto <span class="sort-icon" aria-hidden="true"></span>
+                      </th>
+                      <th class="sortable" data-sort="competitividad" scope="col">
+                        Competitividad <span class="sort-icon" aria-hidden="true"></span>
+                      </th>
+                      <th class="num sortable" data-sort="inventario" scope="col">
+                        Inventario <span class="sort-icon" aria-hidden="true"></span>
+                      </th>
+                      <th class="num sortable" data-sort="precioCuballama" scope="col">
+                        Tu precio <span class="sort-icon" aria-hidden="true"></span>
+                      </th>
+                      <th class="num sortable" data-sort="distanciaMin" scope="col">
+                        Mín. mercado <span class="sort-icon" aria-hidden="true"></span>
+                      </th>
+                      <th class="num sortable" data-sort="distanciaMedio" scope="col">
+                        Mediana <span class="sort-icon" aria-hidden="true"></span>
+                      </th>
+                      <th class="num sortable" data-sort="cantidadPublicaciones" scope="col">
+                        Pub. <span class="sort-icon" aria-hidden="true"></span>
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
               </div>
-            </header>
+            </article>
 
-            <div
-              class="compet-filters"
-              id="compet-filters"
-              role="toolbar"
-              aria-label="Filtrar por competitividad"
-            ></div>
+            <!-- Detalle de un producto -->
+            <section class="panel detail-panel" id="detail-section" aria-label="Detalle del producto">
+              <div class="detail-empty" id="detail-empty">
+                <div class="detail-empty__icon" aria-hidden="true">👈</div>
+                <p>Selecciona un producto de la lista para ver su comparación con el mercado.</p>
+              </div>
 
-            <div class="table-wrap">
-              <table id="results-table">
-                <thead>
-                  <tr>
-                    <th class="sortable" data-sort="nombre" scope="col">
-                      Producto <span class="sort-icon" aria-hidden="true"></span>
-                    </th>
-                    <th class="sortable" data-sort="competitividad" scope="col">
-                      Competitividad <span class="sort-icon" aria-hidden="true"></span>
-                    </th>
-                    <th class="num sortable" data-sort="inventario" scope="col">
-                      Inventario <span class="sort-icon" aria-hidden="true"></span>
-                    </th>
-                    <th class="num sortable" data-sort="precioCuballama" scope="col">
-                      Tu precio <span class="sort-icon" aria-hidden="true"></span>
-                    </th>
-                    <th class="num sortable" data-sort="distanciaMin" scope="col">
-                      Mín. mercado <span class="sort-icon" aria-hidden="true"></span>
-                    </th>
-                    <th class="num sortable" data-sort="distanciaMedio" scope="col">
-                      Mediana <span class="sort-icon" aria-hidden="true"></span>
-                    </th>
-                    <th class="num sortable" data-sort="cantidadPublicaciones" scope="col">
-                      Pub. <span class="sort-icon" aria-hidden="true"></span>
-                    </th>
-                  </tr>
-                </thead>
-                <tbody></tbody>
-              </table>
-            </div>
-          </article>
-        </div>
-      </section>
+              <div class="detail-body hidden" id="detail-body">
+                <div class="detail-header">
+                  <div class="detail-header__titles">
+                    <h2 id="detail-title"></h2>
+                  </div>
+                </div>
 
-      <!-- Detalle de un producto -->
-      <section class="panel detail-panel hidden" id="detail-section" aria-label="Detalle del producto">
-        <div class="detail-header">
-          <button type="button" id="back-btn" class="btn btn--secondary">← Volver</button>
-          <div class="detail-header__titles">
-            <h2 id="detail-title"></h2>
-            <p id="detail-meta" class="muted"></p>
+                <section class="detail-criteria" aria-label="Criterios de búsqueda">
+                  <h3>Criterios de búsqueda</h3>
+                  <div id="detail-terms"></div>
+                  <form class="tag-editor" id="tag-form">
+                    <label class="sr-only" for="tag-input">Añadir etiqueta</label>
+                    <input
+                      id="tag-input"
+                      type="search"
+                      placeholder="Añadir etiqueta manual…"
+                      autocomplete="off"
+                    />
+                    <button type="submit" class="btn btn--ghost">Añadir</button>
+                    <button type="button" id="similar-btn" class="btn btn--secondary">
+                      Sugerir con IA
+                    </button>
+                  </form>
+                  <p id="tag-status" class="status tag-status" role="status" aria-live="polite"></p>
+                </section>
+
+                <div class="chart-grid">
+                  <article class="panel chart-card chart-card--inset">
+                    <header class="chart-card__head">
+                      <h3>Tu precio vs mercado</h3>
+                    </header>
+                    <div class="chart-card__body" id="chart-comparison"></div>
+                  </article>
+                  <article class="panel chart-card chart-card--inset">
+                    <header class="chart-card__head">
+                      <h3>Distribución del mercado</h3>
+                    </header>
+                    <div class="chart-card__body" id="chart-histogram"></div>
+                  </article>
+                </div>
+
+                <h3 id="detail-publications-title" class="section-subtitle">Publicaciones encontradas</h3>
+                <div class="table-wrap detail-table-wrap">
+                  <table id="detail-table">
+                    <thead>
+                      <tr>
+                        <th scope="col">Nombre del producto</th>
+                        <th class="num" scope="col">Precio (USD)</th>
+                        <th scope="col">Link</th>
+                      </tr>
+                    </thead>
+                    <tbody></tbody>
+                  </table>
+                </div>
+              </div>
+            </section>
           </div>
-          <span id="detail-verdict" class="pill"></span>
-        </div>
-
-        <div class="detail-stats" id="detail-stats"></div>
-
-        <div class="chart-grid">
-          <article class="panel chart-card chart-card--inset">
-            <header class="chart-card__head">
-              <h3>Tu precio vs mercado</h3>
-            </header>
-            <div class="chart-card__body" id="chart-comparison"></div>
-          </article>
-          <article class="panel chart-card chart-card--inset">
-            <header class="chart-card__head">
-              <h3>Distribución de precios del mercado</h3>
-            </header>
-            <div class="chart-card__body" id="chart-histogram"></div>
-          </article>
-        </div>
-
-        <details class="terms-box" id="detail-terms-box">
-          <summary>Criterio de búsqueda y filtros</summary>
-          <div id="detail-terms"></div>
-        </details>
-
-        <button type="button" id="similar-btn" class="btn btn--secondary">
-          Buscar productos similares
-        </button>
-
-        <h3 id="detail-publications-title" class="section-subtitle">Publicaciones encontradas</h3>
-        <div class="table-wrap detail-table-wrap">
-          <table id="detail-table">
-            <thead>
-              <tr>
-                <th scope="col">Nombre del producto</th>
-                <th class="num" scope="col">Precio (USD)</th>
-                <th scope="col">Link</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
         </div>
       </section>
 

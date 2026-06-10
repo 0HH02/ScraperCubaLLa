@@ -14,7 +14,13 @@ import {
   loadSettingsOpen,
   saveSettingsOpen,
 } from "./js/storage.js";
-import { fetchHealth, analyzeWithFile, fetchMarketSearch, fetchSimilarProducts } from "./js/api.js";
+import {
+  fetchHealth,
+  analyzeWithFile,
+  fetchMarketSearch,
+  fetchSuggestedTag,
+  reanalyzeProduct,
+} from "./js/api.js";
 import {
   prepareRows,
   recalcRowStats,
@@ -25,8 +31,6 @@ import {
   BUCKETS,
 } from "./js/model.js";
 import {
-  renderBreakdown,
-  renderOpportunities,
   renderComparison,
   renderHistogram,
 } from "./js/charts.js";
@@ -54,9 +58,8 @@ const dashboardSection = $("dashboard-section");
 const dashboardEmpty = $("dashboard-empty");
 const dashboardContent = $("dashboard-content");
 const emptyCta = $("empty-cta");
+const headerKpiWrap = $("header-kpi-wrap");
 const kpiRow = $("kpi-row");
-const chartBreakdown = $("chart-breakdown");
-const chartOpportunities = $("chart-opportunities");
 const filterInput = $("filter");
 const competFiltersEl = $("compet-filters");
 const tableBody = document.querySelector("#results-table tbody");
@@ -75,15 +78,15 @@ const COMPET_FILTER_OPTIONS = [
 
 let competitivenessFilter = "all";
 
-const detailSection = $("detail-section");
-const backBtn = $("back-btn");
+const detailEmpty = $("detail-empty");
+const detailBody = $("detail-body");
 const detailTitle = $("detail-title");
-const detailMeta = $("detail-meta");
-const detailVerdict = $("detail-verdict");
-const detailStats = $("detail-stats");
 const chartComparison = $("chart-comparison");
 const chartHistogram = $("chart-histogram");
 const detailTerms = $("detail-terms");
+const tagForm = $("tag-form");
+const tagInput = $("tag-input");
+const tagStatus = $("tag-status");
 const similarBtn = $("similar-btn");
 const detailPublicationsTitle = $("detail-publications-title");
 const detailTableBody = document.querySelector("#detail-table tbody");
@@ -194,6 +197,73 @@ function bindTermToggles(container, resolveRow, afterChange) {
       afterChange(row);
     });
   });
+}
+
+function setTagStatus(message, type = "") {
+  tagStatus.textContent = message;
+  tagStatus.className = `status tag-status ${type}`.trim();
+}
+
+function getCurrentDetailRow() {
+  return allRows.find((r) => r.codigo === currentDetailCodigo) || null;
+}
+
+function getExistingTags(row) {
+  return [row.nombre, ...(row.nombresBusqueda || [])].filter(Boolean);
+}
+
+function hasSearchTag(row, tag) {
+  const normalized = normalizeTerm(tag);
+  return getExistingTags(row).some((name) => normalizeTerm(name) === normalized);
+}
+
+function upsertRow(updatedRow) {
+  const prepared = prepareRows([updatedRow])[0];
+  const idx = allRows.findIndex((row) => row.codigo === prepared.codigo);
+  if (idx >= 0) {
+    allRows[idx] = prepared;
+  }
+  return allRows[idx] || prepared;
+}
+
+async function reanalyzeCurrentRowWithTags(row, tags, statusMessage) {
+  setTagStatus(statusMessage);
+  tagInput.disabled = true;
+  similarBtn.disabled = true;
+
+  try {
+    const updatedRow = await reanalyzeProduct({ ...row, nombresBusqueda: tags });
+    const prepared = upsertRow(updatedRow);
+    currentDetailCodigo = prepared.codigo;
+    renderDetail(prepared);
+    refreshDashboard();
+    setTagStatus("Etiqueta aplicada y comparativa actualizada.", "ok");
+  } catch (err) {
+    setTagStatus(err.message, "error");
+  } finally {
+    tagInput.disabled = false;
+    similarBtn.disabled = false;
+    tagInput.focus();
+  }
+}
+
+async function addSearchTag(row, rawTag, source = "manual") {
+  const tag = String(rawTag || "").trim().toLowerCase();
+  if (!tag) {
+    setTagStatus("Escribe una etiqueta antes de añadirla.", "error");
+    return;
+  }
+  if (hasSearchTag(row, tag)) {
+    setTagStatus("Esa etiqueta ya existe para este producto.", "error");
+    return;
+  }
+
+  const tags = [...(row.nombresBusqueda || []), tag];
+  await reanalyzeCurrentRowWithTags(
+    row,
+    tags,
+    source === "ia" ? "Añadiendo etiqueta sugerida por IA…" : "Añadiendo etiqueta manual…",
+  );
 }
 
 /* ---------------------------------------------------------------- Ordenamiento */
@@ -333,7 +403,7 @@ function renderTable(rows) {
           aria-label="Ver detalle de ${escapeHtml(row.nombre || "")}">
         <td>
           <div class="product-name">${escapeHtml(row.nombre || "—")}</div>
-          ${renderSearchTerms(row)}
+          ${row.codigo ? `<div class="product-code">${escapeHtml(row.codigo)}</div>` : ""}
         </td>
         <td>
           <span class="pill" data-bucket="${comp.bucket}">${BUCKETS[comp.bucket].label}</span>
@@ -364,41 +434,34 @@ function renderTable(rows) {
     });
   });
 
-  bindTermToggles(
-    tableBody,
-    (input) => allRows.find((r) => r.codigo === input.dataset.codigo),
-    () => refreshDashboard(),
-  );
+  markSelectedRow();
 }
 
 /* ------------------------------------------------------------------ Dashboard */
 function renderKpis(summary) {
   const cards = [
     {
-      label: "Productos analizados",
+      label: "Productos",
       value: summary.total,
-      sub: `${summary.conDatos} con datos · ${summary.sinDatos} sin datos`,
+      sub: `${summary.conDatos} con datos · ${summary.sinDatos} sin`,
       color: "var(--border-strong)",
     },
     {
       label: "Competitivos",
       value: summary.competitivos,
-      sub:
-        summary.tasaCompetitiva != null
-          ? `${formatPercent(summary.tasaCompetitiva)} de los que tienen datos`
-          : "—",
+      sub: summary.tasaCompetitiva != null ? `${formatPercent(summary.tasaCompetitiva)} con datos` : "—",
       color: "var(--ok)",
     },
     {
-      label: "Por encima del mercado",
+      label: "Sobre mercado",
       value: summary.porEncima,
-      sub: "más caros que la mediana o el máximo",
+      sub: "más caros que la mediana",
       color: "var(--bad)",
     },
     {
       label: "Posición típica",
       value: summary.medianPercentile != null ? formatPercent(summary.medianPercentile) : "—",
-      sub: "más barato que ese % del mercado (mediana)",
+      sub: "más barato (mediana)",
       color: "var(--accent)",
     },
   ];
@@ -406,9 +469,11 @@ function renderKpis(summary) {
   kpiRow.innerHTML = cards
     .map(
       (c) => `
-      <div class="kpi" style="--kpi-accent:${c.color}">
-        <span class="kpi__label">${c.label}</span>
+      <div class="kpi" style="--kpi-accent:${c.color}" title="${escapeHtml(c.label)}: ${escapeHtml(
+        String(c.sub),
+      )}">
         <span class="kpi__value">${c.value}</span>
+        <span class="kpi__label">${c.label}</span>
         <span class="kpi__sub">${c.sub}</span>
       </div>`,
     )
@@ -418,8 +483,6 @@ function renderKpis(summary) {
 function refreshDashboard() {
   const summary = summarize(allRows);
   renderKpis(summary);
-  renderBreakdown(chartBreakdown, summary);
-  renderOpportunities(chartOpportunities, allRows);
   renderCompetitivenessFilters();
   renderTable(getTableRows());
 }
@@ -523,9 +586,25 @@ function similarRefs() {
 /* ---------------------------------------------------------------- Navegación */
 function setView(name) {
   dashboardSection.classList.toggle("hidden", name !== "dashboard");
-  detailSection.classList.toggle("hidden", name !== "detail");
   similarSection.classList.toggle("hidden", name !== "similar");
-  window.scrollTo({ top: 0, behavior: "smooth" });
+  if (name !== "dashboard") {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+}
+
+function markSelectedRow() {
+  tableBody.querySelectorAll("tr.row-clickable").forEach((tr) => {
+    const selected = currentDetailCodigo != null && tr.dataset.codigo === currentDetailCodigo;
+    tr.classList.toggle("row-selected", selected);
+    tr.setAttribute("aria-pressed", String(selected));
+  });
+}
+
+function clearSelection() {
+  currentDetailCodigo = null;
+  detailBody.classList.add("hidden");
+  detailEmpty.classList.remove("hidden");
+  markSelectedRow();
 }
 
 function showResults(rows, message, type = "ok") {
@@ -535,6 +614,9 @@ function showResults(rows, message, type = "ok") {
   competitivenessFilter = "all";
   dashboardEmpty.classList.add("hidden");
   dashboardContent.classList.remove("hidden");
+  dashboardContent.classList.add("has-detail");
+  headerKpiWrap.classList.remove("hidden");
+  clearSelection();
   updateSortIcons();
   refreshDashboard();
   setView("dashboard");
@@ -546,41 +628,21 @@ function showDetail(codigo) {
   if (!row) return;
   currentDetailCodigo = codigo;
   renderDetail(row);
-  setView("detail");
+  detailEmpty.classList.add("hidden");
+  detailBody.classList.remove("hidden");
+  markSelectedRow();
+  setView("dashboard");
 }
 
 function renderDetail(row) {
-  const comp = getCompetitiveness(row);
   detailTitle.textContent = row.nombre;
-  const formula = row.marcadoRojo ? "producto rojo: × 1.4" : `÷ ${row.tipoCambio} × 1.4`;
-  detailMeta.textContent = `${row.codigo || "—"} · Precio venta: ${formatMoney(
-    row.precioVenta,
-  )} · Cuballama: ${formatMoney(row.precioCuballama)} (${formula})`;
-
-  detailVerdict.className = "pill";
-  detailVerdict.setAttribute("data-bucket", comp.bucket);
-  detailVerdict.textContent =
-    BUCKETS[comp.bucket].label + (comp.percentile != null ? ` · ${percentileText(comp)}` : "");
-
-  const sc = row.sinPublicaciones;
-  detailStats.innerHTML = `
-    <div class="stat-card"><span>Tu precio (Cuballama)</span><strong>${formatMoney(row.precioCuballama)}</strong></div>
-    <div class="stat-card"><span>Mínimo mercado</span><strong>${sc ? "∞" : formatMoney(row.precioMin)}</strong></div>
-    <div class="stat-card"><span>Mediana mercado</span><strong>${sc ? "∞" : formatMoney(row.precioMedio)}</strong></div>
-    <div class="stat-card"><span>Máximo mercado</span><strong>${sc ? "∞" : formatMoney(row.precioMax)}</strong></div>
-    <div class="stat-card"><span>Publicaciones</span><strong>${row.cantidadPublicaciones}</strong></div>
-    <div class="stat-card"><span>Semejantes</span><strong>${row.cantidadSemejantes}</strong></div>`;
+  tagInput.value = "";
+  setTagStatus("");
 
   renderComparison(chartComparison, row);
   renderHistogram(chartHistogram, row.publicaciones, row.precioCuballama);
 
-  detailTerms.innerHTML = `
-    <p><strong>Criterio:</strong> nombres generados por IA (${escapeHtml(
-      row.fuenteNombresBusqueda || "fallback",
-    )}) buscados en las publicaciones de Cuballama (sin combos ni accesorios).</p>
-    <p><strong>Original:</strong> <code>${escapeHtml(row.nombre)}</code></p>
-    ${renderSearchTerms(row)}
-    ${renderMarketFilters(row)}`;
+  detailTerms.innerHTML = renderSearchTerms(row);
 
   bindTermToggles(
     detailTerms,
@@ -622,47 +684,30 @@ function renderSimilarPanel(row) {
   renderSubcategories(row, similarRefs());
 }
 
-async function showSimilarProducts() {
-  const row = allRows.find((r) => r.codigo === currentDetailCodigo);
+async function suggestTagWithAi() {
+  const row = getCurrentDetailRow();
   if (!row) return;
 
-  setView("similar");
-  selectedSimilarSubcategoryKey = null;
-  similarTitle.textContent = `Productos similares a ${row.nombre}`;
-  similarMeta.textContent = `Precio Cuballama: ${formatMoney(row.precioCuballama)} · Buscando por función, uso y rango`;
-  similarTerms.innerHTML = "";
-  similarTermsBox.classList.add("hidden");
-  similarSubcategoryCards.innerHTML = "";
-  renderSubcategoryTable(null, similarSubcategoryTableTitle, similarTableBody);
-  setSimilarStatus("Consultando IA y buscando publicaciones similares…");
+  setTagStatus("Consultando IA para sugerir una etiqueta…");
   similarBtn.disabled = true;
+  tagInput.disabled = true;
 
   try {
-    const data = await fetchSimilarProducts({
+    const data = await fetchSuggestedTag({
       nombre: row.nombre,
       precioCuballama: row.precioCuballama,
+      existingTags: getExistingTags(row),
     });
-    const similarRow = recalcRowStats({
-      codigo: `similar:${row.codigo || normalizeTerm(row.nombre)}`,
-      nombre: row.nombre,
-      precioCuballama: row.precioCuballama,
-      fuenteNombresBusqueda: data.fuenteNombresBusqueda || "fallback",
-      nombresBusqueda: data.nombresBusqueda || [],
-      palabrasNegativas: data.palabrasNegativas || [],
-      filtroPrecioMercado: data.filtroPrecioMercado || null,
-      publicaciones: data.publicaciones || [],
-    });
-    currentSimilarRow = similarRow;
-    renderSimilarPanel(currentSimilarRow);
-    setSimilarStatus(`Listo: ${similarRow.nombresBusqueda.length} término(s) similares.`, "ok");
+    if (!data.tag) {
+      setTagStatus("La IA no sugirió etiquetas nuevas para este producto.", "error");
+      return;
+    }
+    await addSearchTag(row, data.tag, "ia");
   } catch (err) {
-    currentSimilarRow = null;
-    similarTermsBox.classList.add("hidden");
-    similarSubcategoryCards.innerHTML = "";
-    renderSubcategoryTable(null, similarSubcategoryTableTitle, similarTableBody);
-    setSimilarStatus(err.message, "error");
+    setTagStatus(err.message, "error");
   } finally {
     similarBtn.disabled = false;
+    tagInput.disabled = false;
   }
 }
 
@@ -759,9 +804,17 @@ emptyCta.addEventListener("click", () => {
   fileInput.focus();
 });
 
-backBtn.addEventListener("click", () => setView("dashboard"));
 similarBackBtn.addEventListener("click", () => showDetail(currentDetailCodigo));
-similarBtn.addEventListener("click", showSimilarProducts);
+similarBtn.addEventListener("click", suggestTagWithAi);
+
+tagForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const row = getCurrentDetailRow();
+  if (!row) return;
+  const tag = tagInput.value.trim();
+  tagInput.value = "";
+  addSearchTag(row, tag);
+});
 
 filterInput.addEventListener("input", () => {
   renderCompetitivenessFilters();

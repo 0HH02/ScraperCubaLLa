@@ -2,9 +2,10 @@ import express from "express";
 import multer from "multer";
 import path from "path";
 import { fileURLToPath } from "url";
-import { analyzeCatalog, analyzeSimilarProducts, clearMarketCache } from "./analysis.js";
+import { analyzeCatalog, analyzeProduct, analyzeSimilarProducts, clearMarketCache } from "./analysis.js";
 import { getMarketStats, initDatabase } from "./db.js";
 import { parseCatalogFromBuffer } from "./excel.js";
+import { getSimilarProductNames } from "./gemini.js";
 import { searchMarketProducts } from "./marketSearch.js";
 
 function parseTipoCambio(value) {
@@ -13,6 +14,16 @@ function parseTipoCambio(value) {
     throw new Error("Indica un tipo de cambio válido (moneda local por 1 USD, mayor que 0).");
   }
   return n;
+}
+
+function normalizeTag(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -147,6 +158,58 @@ app.post("/api/similar-products", async (req, res) => {
       precioCuballama: Number.isFinite(precioCuballama) ? precioCuballama : null,
     });
     res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post("/api/suggest-tag", async (req, res) => {
+  try {
+    const nombre = String(req.body?.nombre ?? "").trim();
+    if (!nombre) {
+      return res.status(400).json({ error: "Se espera el nombre del producto." });
+    }
+
+    const precioCuballama =
+      req.body?.precioCuballama == null ? null : Number(req.body.precioCuballama);
+    const existing = new Set((req.body?.existingTags || []).map(normalizeTag).filter(Boolean));
+    existing.add(normalizeTag(nombre));
+
+    const result = await getSimilarProductNames({
+      nombre,
+      precioCuballama: Number.isFinite(precioCuballama) ? precioCuballama : null,
+    });
+    const tag = result.nombres?.find((term) => !existing.has(normalizeTag(term))) || null;
+
+    res.json({
+      ok: true,
+      tag,
+      fuenteNombresBusqueda: result.source,
+      nombresBusqueda: result.nombres,
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post("/api/reanalyze-product", async (req, res) => {
+  try {
+    const item = req.body?.item;
+    if (!item || typeof item !== "object") {
+      return res.status(400).json({ error: "Se espera un producto para reanalizar." });
+    }
+
+    clearMarketCache();
+    const tipoCambio = parseTipoCambio(item.tipoCambio);
+    const nombres = Array.isArray(item.nombresBusqueda)
+      ? item.nombresBusqueda.map((name) => String(name).trim()).filter(Boolean)
+      : [];
+    const row = analyzeProduct(item, tipoCambio, {
+      nombres,
+      source: item.fuenteNombresBusqueda || "manual",
+    });
+
+    res.json({ ok: true, row });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }

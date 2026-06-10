@@ -162,7 +162,7 @@ export function renderComparison(el, row) {
 
   mount(el, {
     ...baseOptions(),
-    chart: { ...baseOptions().chart, type: "bar", height: 260 },
+    chart: { ...baseOptions().chart, type: "bar", height: 170 },
     series: [{ name: "USD", data: data.map((d) => ({ x: d.x, y: d.y, fillColor: d.fill })) }],
     plotOptions: { bar: { borderRadius: 6, columnWidth: "52%", distributed: true } },
     colors: data.map((d) => d.fill),
@@ -170,8 +170,8 @@ export function renderComparison(el, row) {
     dataLabels: {
       enabled: true,
       formatter: (val) => formatMoney(val),
-      style: { colors: ["#f0f4f9"], fontWeight: 600 },
-      offsetY: -18,
+      style: { colors: ["#f0f4f9"], fontWeight: 600, fontSize: "10px" },
+      offsetY: -14,
     },
     xaxis: { labels: { style: { colors: "#9fb0c3" } } },
     yaxis: { labels: { formatter: (val) => `$${Number(val).toFixed(0)}` } },
@@ -221,7 +221,7 @@ export function renderHistogram(el, publicaciones, myPrice, binCount = 10) {
 
   mount(el, {
     ...baseOptions(),
-    chart: { ...baseOptions().chart, type: "bar", height: 240 },
+    chart: { ...baseOptions().chart, type: "bar", height: 170 },
     series: [{ name: "Publicaciones", data: bins.map((b) => b.count) }],
     plotOptions: {
       bar: {

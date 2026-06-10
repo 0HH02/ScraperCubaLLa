@@ -88,3 +88,25 @@ export async function fetchSimilarProducts({ nombre, precioCuballama }) {
   if (!res.ok) throw new Error(data.error || "Error al buscar productos similares.");
   return data;
 }
+
+export async function fetchSuggestedTag({ nombre, precioCuballama, existingTags }) {
+  const res = await fetch("/api/suggest-tag", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ nombre, precioCuballama, existingTags }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Error al sugerir etiqueta.");
+  return data;
+}
+
+export async function reanalyzeProduct(item) {
+  const res = await fetch("/api/reanalyze-product", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ item }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Error al reanalizar el producto.");
+  return data.row;
+}
