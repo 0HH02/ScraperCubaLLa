@@ -1,5 +1,6 @@
-import { queryAll } from "./db.js";
+import { ensureFreshDatabase, getDbVersion, hasColumn, queryAll } from "./db.js";
 import { getCatalogSearchNames, getSimilarProductNames } from "./gemini.js";
+import { parsePriceText, toUsd, USD } from "./price.js";
 
 const COMBO_PATTERN = /\bcombo\b/i;
 const MARGIN_FACTOR = 1.4;
@@ -173,14 +174,6 @@ const CATEGORY_NEGATIVE_RULES = [
   },
 ];
 
-function parseMarketPrice(text) {
-  if (text == null || text === "") return null;
-  const match = String(text).match(/[\d]+(?:[.,]\d+)?/);
-  if (!match) return null;
-  const num = Number.parseFloat(match[0].replace(",", "."));
-  return Number.isFinite(num) ? num : null;
-}
-
 function normalizeText(text) {
   return text
     .toLowerCase()
@@ -225,30 +218,74 @@ function calcPrecioCuballama(precioVenta, tipoCambio, marcadoRojo) {
   return round2((precioVenta / tipoCambio) * MARGIN_FACTOR);
 }
 
-let marketCache;
+let marketCache = null;
+let marketCacheKey = "";
 
-function loadMarketProducts() {
-  if (marketCache) return marketCache;
+/** El importe convertido a USD, prefiriendo el que ya normalizó el scraper. */
+function resolveListingUsd(row, rates) {
+  const valor = Number(row.precioValor);
+  if (Number.isFinite(valor) && valor > 0) {
+    return toUsd({ amount: valor, currency: row.precioMoneda || USD }, rates);
+  }
+  return toUsd(parsePriceText(row.precio), rates);
+}
+
+function buildTokenIndex(products) {
+  const byToken = new Map();
+  for (const product of products) {
+    for (const token of product.tokens) {
+      let bucket = byToken.get(token);
+      if (!bucket) {
+        bucket = [];
+        byToken.set(token, bucket);
+      }
+      bucket.push(product);
+    }
+  }
+  return byToken;
+}
+
+function loadMarketProducts(rates = {}) {
+  ensureFreshDatabase();
+
+  const key = `${getDbVersion()}|${rates.cupPerUsd ?? ""}|${rates.usdPerEur ?? ""}`;
+  if (marketCache && marketCacheKey === key) return marketCache;
+
+  const soloActivos = hasColumn("Producto", "Activo");
+  const tienePrecioValor = hasColumn("Producto", "Precio_Valor");
+  const columnasPrecio = tienePrecioValor
+    ? "p.Precio_Valor AS precioValor, p.Precio_Moneda AS precioMoneda,"
+    : "NULL AS precioValor, NULL AS precioMoneda,";
 
   const rows = queryAll(`
-    SELECT p.ID AS id, p.Nombre AS nombre, p.Link AS link, p.Precio AS precio, t.Nombre AS tienda
+    SELECT p.ID AS id, p.Nombre AS nombre, p.Link AS link,
+           ${columnasPrecio}
+           p.Precio AS precio, t.Nombre AS tienda
     FROM Producto p
     JOIN Tienda t ON t.ID = p.ID_tienda
-    WHERE p.Precio IS NOT NULL AND TRIM(p.Precio) != ''
+    WHERE p.Nombre IS NOT NULL AND TRIM(p.Nombre) != ''
+      ${soloActivos ? "AND p.Activo = 1" : ""}
   `);
 
-  marketCache = rows
-    .map((row) => ({
+  const products = [];
+  for (const row of rows) {
+    if (isComboListing(row.nombre)) continue;
+    const precio = resolveListingUsd(row, rates);
+    if (precio == null || precio <= 0) continue;
+
+    products.push({
       id: row.id,
       nombre: row.nombre,
       link: row.link,
       nombreNorm: normalizeText(row.nombre),
       tokens: new Set(tokenize(row.nombre)),
-      precio: parseMarketPrice(row.precio),
+      precio: round2(precio),
       tienda: row.tienda,
-    }))
-    .filter((row) => row.precio != null && !isComboListing(row.nombre));
+    });
+  }
 
+  marketCache = buildTokenIndex(products);
+  marketCacheKey = key;
   return marketCache;
 }
 
@@ -268,18 +305,29 @@ function normalizedTermTokens(term) {
     .filter((token) => token.length >= 2 && !STOP_WORDS.has(token));
 }
 
-function listingHasTerm(product, term) {
-  const normalized = normalizeText(term);
-  if (!normalized) return false;
-
-  const termTokens = normalizedTermTokens(normalized);
-  if (termTokens.length === 0) return false;
+function listingHasNormalizedTerm(product, norm, termTokens) {
+  if (!norm || termTokens.length === 0) return false;
   if (termTokens.length === 1) return product.tokens.has(termTokens[0]);
 
   return (
-    product.nombreNorm.includes(normalized) ||
+    product.nombreNorm.includes(norm) ||
     termTokens.every((token) => product.tokens.has(token))
   );
+}
+
+function listingHasTerm(product, term) {
+  const normalized = normalizeText(term);
+  return listingHasNormalizedTerm(product, normalized, normalizedTermTokens(normalized));
+}
+
+/** Deja un término listo para comparar muchas veces sin re-normalizarlo. */
+function compileTerm(term) {
+  const norm = normalizeText(term);
+  return { norm, tokens: normalizedTermTokens(norm) };
+}
+
+function compileTerms(terms) {
+  return terms.map(compileTerm).filter((t) => t.tokens.length > 0);
 }
 
 function getNegativeTerms(catalogName) {
@@ -302,8 +350,10 @@ function getNegativeTerms(catalogName) {
   });
 }
 
-function isNegativeListing(product, negativeTerms) {
-  return negativeTerms.some((term) => listingHasTerm(product, term));
+function isNegativeListing(product, compiledNegatives) {
+  return compiledNegatives.some((term) =>
+    listingHasNormalizedTerm(product, term.norm, term.tokens),
+  );
 }
 
 function buildPriceFilter(precioCuballama) {
@@ -324,25 +374,63 @@ function isPriceComparable(product, priceFilter) {
   return product.precio >= priceFilter.min && product.precio <= priceFilter.max;
 }
 
-/** Alguno de los nombres generados debe aparecer dentro de la publicación. */
-function searchNameInListing(searchNamesNorm, product) {
-  return searchNamesNorm.find((name) => listingHasTerm(product, name)) ?? null;
+/**
+ * Reduce el mercado a las publicaciones que pueden coincidir. Recorrer las
+ * 30.000+ publicaciones por cada producto del catálogo era el cuello de botella.
+ *
+ * Por término se toman tres grupos, uno por cada forma de coincidir: el token
+ * menos frecuente cubre "todas las palabras presentes"; la primera y la última
+ * palabra cubren la coincidencia por subcadena ("televisor smart" dentro de
+ * "Televisor SmartTV", "spaguetis 500g" dentro de "Espaguetis 500g").
+ */
+function collectCandidates(byToken, searchTerms) {
+  const candidates = new Set();
+
+  const addBucket = (bucket) => {
+    if (!bucket) return;
+    for (const product of bucket) candidates.add(product);
+  };
+
+  for (const term of searchTerms) {
+    let smallest = null;
+    for (const token of term.tokens) {
+      const bucket = byToken.get(token);
+      if (!bucket) {
+        smallest = null;
+        break;
+      }
+      if (!smallest || bucket.length < smallest.length) smallest = bucket;
+    }
+    addBucket(smallest);
+
+    if (term.tokens.length > 1) {
+      addBucket(byToken.get(term.tokens[0]));
+      addBucket(byToken.get(term.tokens[term.tokens.length - 1]));
+    }
+  }
+
+  return candidates;
 }
 
-function scoreSimilarity(catalogName, product) {
-  const catalogTokens = tokenize(catalogName);
-  const catalogNorm = normalizeText(catalogName);
-  if (catalogTokens.length === 0) return 0;
+function matchingSearchTerm(product, searchTerms) {
+  for (const term of searchTerms) {
+    if (listingHasNormalizedTerm(product, term.norm, term.tokens)) return term.norm;
+  }
+  return null;
+}
+
+function scoreSimilarity(nameInfo, product) {
+  if (nameInfo.tokens.length === 0) return 0;
 
   let hits = 0;
-  for (const token of catalogTokens) {
+  for (const token of nameInfo.tokens) {
     if (product.tokens.has(token)) hits += 1;
   }
-  let score = hits / catalogTokens.length;
+  let score = hits / nameInfo.tokens.length;
 
-  if (listingHasTerm(product, catalogNorm)) {
+  if (listingHasNormalizedTerm(product, nameInfo.norm, nameInfo.tokens)) {
     score += 0.25;
-    if (catalogNorm.length / product.nombreNorm.length >= 0.35) {
+    if (nameInfo.norm.length / product.nombreNorm.length >= 0.35) {
       score += 0.2;
     }
   }
@@ -360,22 +448,31 @@ function findPublications(catalogName, searchNames, options = {}) {
     return [];
   }
 
-  const products = loadMarketProducts();
-  const matched = [];
-  const negativeTerms = getNegativeTerms(catalogName);
+  const searchTerms = compileTerms(searchNamesNorm);
+  if (searchTerms.length === 0) {
+    return [];
+  }
+
+  const index = loadMarketProducts(options.rates);
+  const negativeTerms = compileTerms(getNegativeTerms(catalogName));
   const priceFilter = buildPriceFilter(options.precioCuballama);
+  const scoringNames = [compileTerm(catalogName), ...searchTerms].filter(
+    (name) => name.tokens.length > 0,
+  );
+  const matched = [];
 
-  for (const product of products) {
-    if (isNegativeListing(product, negativeTerms)) continue;
-    if (!isPriceComparable(product, priceFilter)) continue;
-
-    const terminoBusqueda = searchNameInListing(searchNamesNorm, product);
+  for (const product of collectCandidates(index, searchTerms)) {
+    const terminoBusqueda = matchingSearchTerm(product, searchTerms);
     if (!terminoBusqueda) continue;
+    if (!isPriceComparable(product, priceFilter)) continue;
+    if (isNegativeListing(product, negativeTerms)) continue;
 
-    const similitud = Math.max(
-      scoreSimilarity(catalogName, product),
-      ...searchNamesNorm.map((name) => scoreSimilarity(name, product)),
-    );
+    let similitud = 0;
+    for (const name of scoringNames) {
+      const score = scoreSimilarity(name, product);
+      if (score > similitud) similitud = score;
+    }
+
     matched.push({
       id: product.id,
       nombre: product.nombre,
@@ -394,12 +491,12 @@ function findPublications(catalogName, searchNames, options = {}) {
 function buildPriceStats(publicaciones, precioCuballama) {
   const count = publicaciones.length;
   const semejantes = publicaciones.filter((p) => p.esSemejante);
-  const precios = publicaciones.map((p) => p.precio);
 
   if (count === 0) {
     return {
       cantidadPublicaciones: 0,
       cantidadSemejantes: 0,
+      baseEstadisticas: null,
       precioMin: null,
       precioMedio: null,
       distanciaMin: null,
@@ -407,6 +504,11 @@ function buildPriceStats(publicaciones, precioCuballama) {
       sinPublicaciones: true,
     };
   }
+
+  // Una coincidencia floja y barata hundía el mínimo y la mediana. Cuando hay
+  // publicaciones realmente semejantes, la comparación se hace solo con ellas.
+  const base = semejantes.length > 0 ? semejantes : publicaciones;
+  const precios = base.map((p) => p.precio);
 
   const precioMin = Math.min(...precios);
   const precioMedio = median(precios);
@@ -418,12 +520,21 @@ function buildPriceStats(publicaciones, precioCuballama) {
   return {
     cantidadPublicaciones: count,
     cantidadSemejantes: semejantes.length,
+    baseEstadisticas: semejantes.length > 0 ? "semejantes" : "todas",
     precioMin: round2(precioMin),
     precioMedio: round2(precioMedio),
     distanciaMin,
     distanciaMedio,
     sinPublicaciones: false,
   };
+}
+
+/**
+ * El tipo de cambio del catálogo (moneda local por dólar) es también el que
+ * permite llevar a USD los anuncios publicados en CUP.
+ */
+function ratesFor(tipoCambio) {
+  return { cupPerUsd: Number(tipoCambio) };
 }
 
 export function analyzeProduct(item, tipoCambio, searchInfo) {
@@ -435,6 +546,7 @@ export function analyzeProduct(item, tipoCambio, searchInfo) {
   const nombresBusqueda = searchInfo?.nombres ?? [];
   const publicaciones = findPublications(item.nombre, nombresBusqueda, {
     precioCuballama,
+    rates: ratesFor(tipoCambio),
   });
   const stats = buildPriceStats(publicaciones, precioCuballama);
 
@@ -466,7 +578,7 @@ export async function analyzeCatalog(items, tipoCambio, onProgress) {
   const searchNamesByCode = await getCatalogSearchNames(items, onProgress);
 
   onProgress?.("Cargando publicaciones del mercado Cuballama en memoria…");
-  loadMarketProducts();
+  loadMarketProducts(ratesFor(tipoCambio));
 
   const total = items.length;
   onProgress?.(`Comparando precios de ${total} producto(s) con el mercado…`);
@@ -485,11 +597,12 @@ export async function analyzeCatalog(items, tipoCambio, onProgress) {
   return rows;
 }
 
-export async function analyzeSimilarProducts({ nombre, precioCuballama }) {
+export async function analyzeSimilarProducts({ nombre, precioCuballama, tipoCambio }) {
   const searchInfo = await getSimilarProductNames({ nombre, precioCuballama });
   const publicaciones = findPublications(nombre, searchInfo.nombres, {
     includeCatalogName: false,
     precioCuballama,
+    rates: ratesFor(tipoCambio),
   });
 
   return {
@@ -504,5 +617,6 @@ export async function analyzeSimilarProducts({ nombre, precioCuballama }) {
 }
 
 export function clearMarketCache() {
-  marketCache = undefined;
+  marketCache = null;
+  marketCacheKey = "";
 }

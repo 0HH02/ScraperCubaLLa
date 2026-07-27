@@ -5,6 +5,16 @@ const API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 
 const MAX_SEARCH_NAMES = 10;
 const CATALOG_BATCH_SIZE = 50;
+
+function positiveNumber(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+const REQUEST_TIMEOUT_MS = positiveNumber(process.env.GEMINI_TIMEOUT_MS, 20_000);
+const MAX_RETRIES = positiveNumber(process.env.GEMINI_MAX_RETRIES, 2);
+const RETRY_BASE_DELAY_MS = 900;
+const MOTIVO_NO_CONFIGURADO = "Gemini no está configurado (falta GEMINI_API_KEY).";
 const GENERIC_SINGLE_TERMS = new Set([
   "lavadora",
   "nevera",
@@ -194,7 +204,7 @@ function extractJsonArrayFromText(text) {
   return null;
 }
 
-function parseNamesFromText(text) {
+export function parseNamesFromText(text) {
   const parsed = extractJsonArrayFromText(text);
   if (parsed?.length) {
     return normalizeParsedNames(parsed);
@@ -238,6 +248,143 @@ function parseCatalogNamesFromText(text, items) {
   }
 }
 
+export class GeminiError extends Error {
+  constructor(message, { status = null, retryable = false, motivo, retryAfterMs = 0 } = {}) {
+    super(message);
+    this.name = "GeminiError";
+    this.status = status;
+    this.retryable = retryable;
+    this.motivo = motivo ?? message;
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function errorForStatus(status, detail, retryAfterHeader) {
+  const retryAfterMs = Number(retryAfterHeader) > 0 ? Number(retryAfterHeader) * 1000 : 0;
+  const base = `Gemini API (${status}): ${detail}`;
+
+  if (status === 429) {
+    return new GeminiError(base, {
+      status,
+      retryable: true,
+      retryAfterMs,
+      motivo: "Gemini alcanzó su límite de peticiones. Inténtalo en unos minutos.",
+    });
+  }
+  if (status >= 500) {
+    return new GeminiError(base, {
+      status,
+      retryable: true,
+      retryAfterMs,
+      motivo: "Gemini no está disponible ahora mismo.",
+    });
+  }
+  // Una clave inválida llega como 400, no como 401, así que se mira el detalle.
+  const claveInvalida = /API[_ ]KEY[_ ]INVALID|API key not valid|PERMISSION_DENIED/i.test(detail);
+  if (status === 401 || status === 403 || claveInvalida) {
+    return new GeminiError(base, {
+      status,
+      motivo: "La clave de Gemini no es válida o no tiene permisos. Revisa GEMINI_API_KEY en el .env.",
+    });
+  }
+
+  if (status === 404) {
+    return new GeminiError(base, {
+      status,
+      motivo: `El modelo "${GEMINI_MODEL}" no existe o no está disponible para tu clave.`,
+    });
+  }
+
+  return new GeminiError(base, {
+    status,
+    motivo: "Gemini rechazó la petición.",
+  });
+}
+
+function toGeminiError(err) {
+  if (err instanceof GeminiError) return err;
+  if (err?.name === "AbortError") {
+    return new GeminiError(`Gemini no respondió en ${REQUEST_TIMEOUT_MS} ms`, {
+      retryable: true,
+      motivo: "Gemini tardó demasiado en responder.",
+    });
+  }
+  return new GeminiError(`Fallo de red con Gemini: ${err?.message ?? err}`, {
+    retryable: true,
+    motivo: "No hay conexión con Gemini.",
+  });
+}
+
+/**
+ * Llama a Gemini con tiempo límite y reintentos.
+ * Sin esto, un 429 o una red caída dejaban la petición colgada o degradaban a
+ * fallback sin explicar el motivo.
+ */
+async function callGemini({ prompt, generationConfig }) {
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  if (!apiKey) {
+    throw new GeminiError("Falta GEMINI_API_KEY", { motivo: MOTIVO_NO_CONFIGURADO });
+  }
+
+  const url = `${API_BASE}/${encodeURIComponent(GEMINI_MODEL)}:generateContent`;
+  let lastError = null;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          // En cabecera y no en la query para que la clave no acabe en logs.
+          "x-goog-api-key": apiKey,
+        },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const detail = await res.text().catch(() => "");
+        throw errorForStatus(res.status, detail.slice(0, 200), res.headers.get("retry-after"));
+      }
+
+      const data = await res.json();
+      return data.candidates?.[0]?.content?.parts?.map((p) => p.text).join("") ?? "";
+    } catch (err) {
+      lastError = toGeminiError(err);
+      if (!lastError.retryable || attempt === MAX_RETRIES) throw lastError;
+
+      const wait = lastError.retryAfterMs || RETRY_BASE_DELAY_MS * 2 ** attempt;
+      console.warn(
+        `Gemini: reintento ${attempt + 1}/${MAX_RETRIES} en ${wait} ms (${lastError.message})`,
+      );
+      await sleep(wait);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  throw lastError;
+}
+
+function fallbackResult(nombres, motivo) {
+  return { nombres, source: "fallback", motivo };
+}
+
+/** Un fallo puntual no debe congelarse en caché: se reintentará más tarde. */
+function isCacheable(result) {
+  return result.source === "gemini" || result.motivo === MOTIVO_NO_CONFIGURADO;
+}
+
 function chunkArray(items, size) {
   const chunks = [];
   for (let i = 0; i < items.length; i += size) {
@@ -246,32 +393,16 @@ function chunkArray(items, size) {
   return chunks;
 }
 
-async function requestCatalogSearchNames(batch, apiKey) {
+async function requestCatalogSearchNames(batch) {
   const productos = JSON.stringify(
     batch.map((item) => ({ codigo: item.codigo, nombre: item.nombre })),
     null,
     2,
   );
-  const prompt = CATALOG_PROMPT_TEMPLATE.replace("{{productos}}", productos);
-  const url = `${API_BASE}/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`;
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.2, maxOutputTokens: 8192 },
-    }),
+  const text = await callGemini({
+    prompt: CATALOG_PROMPT_TEMPLATE.replace("{{productos}}", productos),
+    generationConfig: { temperature: 0.2, maxOutputTokens: 8192 },
   });
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Gemini API (${res.status}): ${errText.slice(0, 200)}`);
-  }
-
-  const data = await res.json();
-  const text =
-    data.candidates?.[0]?.content?.parts?.map((p) => p.text).join("") ?? "";
   return parseCatalogNamesFromText(text, batch);
 }
 
@@ -288,41 +419,24 @@ export async function getProductSearchNames(nombre) {
     return nameCache.get(cacheKey);
   }
 
-  const apiKey = process.env.GEMINI_API_KEY?.trim();
-  if (!apiKey) {
-    const result = { nombres: fallbackSimilarNames(nombre), source: "fallback" };
-    nameCache.set(cacheKey, result);
-    return result;
-  }
-
-  const prompt = PROMPT_TEMPLATE.replace("{{nombre}}", nombre);
-  const url = `${API_BASE}/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`;
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
+  let result;
+  try {
+    const text = await callGemini({
+      prompt: PROMPT_TEMPLATE.replace("{{nombre}}", nombre),
       generationConfig: { temperature: 0.2, maxOutputTokens: 256 },
-    }),
-  });
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Gemini API (${res.status}): ${errText.slice(0, 200)}`);
+    });
+    const nombres = parseNamesFromText(text);
+    result =
+      nombres.length === 0
+        ? fallbackResult(fallbackNames(nombre), "Gemini no devolvió términos utilizables.")
+        : { nombres, source: "gemini" };
+  } catch (err) {
+    const geminiError = toGeminiError(err);
+    console.warn(`Gemini: ${geminiError.message}`);
+    result = fallbackResult(fallbackSimilarNames(nombre), geminiError.motivo);
   }
 
-  const data = await res.json();
-  const text =
-    data.candidates?.[0]?.content?.parts?.map((p) => p.text).join("") ?? "";
-  const nombres = parseNamesFromText(text);
-
-  const result =
-    nombres.length === 0
-      ? { nombres: fallbackNames(nombre), source: "fallback" }
-      : { nombres, source: "gemini" };
-
-  nameCache.set(cacheKey, result);
+  if (isCacheable(result)) nameCache.set(cacheKey, result);
   return result;
 }
 
@@ -354,8 +468,9 @@ export async function getCatalogSearchNames(items, onProgress) {
     } else if (pending.length === 0 && cachedCount > 0) {
       onProgress?.("Todos los productos ya tenían nombres en caché.");
     }
+    const motivo = apiKey ? undefined : MOTIVO_NO_CONFIGURADO;
     for (const item of pending) {
-      const fallback = { nombres: fallbackNames(item.nombre), source: "fallback" };
+      const fallback = fallbackResult(fallbackNames(item.nombre), motivo);
       nameCache.set(item.nombre.trim().toLowerCase(), fallback);
       result.set(item.codigo, fallback);
     }
@@ -368,31 +483,40 @@ export async function getCatalogSearchNames(items, onProgress) {
   );
 
   const parsed = new Map();
-  try {
-    for (let i = 0; i < batches.length; i++) {
-      const batch = batches[i];
-      const from = i * CATALOG_BATCH_SIZE + 1;
-      const to = from + batch.length - 1;
-      onProgress?.(
-        `Esperando respuesta de Gemini (lote ${i + 1}/${batches.length}, productos ${from}–${to})…`,
-      );
-      const batchNames = await requestCatalogSearchNames(batch, apiKey);
+  let motivoFallo;
+  for (let i = 0; i < batches.length; i++) {
+    const batch = batches[i];
+    const from = i * CATALOG_BATCH_SIZE + 1;
+    const to = from + batch.length - 1;
+    onProgress?.(
+      `Esperando respuesta de Gemini (lote ${i + 1}/${batches.length}, productos ${from}–${to})…`,
+    );
+
+    try {
+      const batchNames = await requestCatalogSearchNames(batch);
       for (const [codigo, names] of batchNames) {
         parsed.set(codigo, names);
       }
       onProgress?.(`Lote ${i + 1}/${batches.length} recibido.`);
+    } catch (err) {
+      // Un lote fallido ya no cancela los siguientes: antes bastaba un 429 a
+      // mitad del catálogo para dejar el resto sin términos de Gemini.
+      const geminiError = toGeminiError(err);
+      motivoFallo = geminiError.motivo;
+      console.warn(`Gemini: lote ${i + 1} falló (${geminiError.message})`);
+      onProgress?.(`Lote ${i + 1}/${batches.length}: ${geminiError.motivo} Se usarán términos automáticos.`);
+
+      if (!geminiError.retryable && geminiError.status !== 400) {
+        onProgress?.("Se cancelan las llamadas restantes a Gemini.");
+        break;
+      }
     }
-  } catch (err) {
-    console.warn(`Gemini: no se pudieron generar nombres por lote (${err.message})`);
-    onProgress?.(`Gemini falló (${err.message}); usando nombres automáticos para el resto.`);
   }
 
   for (const item of pending) {
     const cacheKey = item.nombre.trim().toLowerCase();
-    const names =
-      parsed.get(item.codigo) ??
-      ({ nombres: fallbackNames(item.nombre), source: "fallback" });
-    nameCache.set(cacheKey, names);
+    const names = parsed.get(item.codigo) ?? fallbackResult(fallbackNames(item.nombre), motivoFallo);
+    if (isCacheable(names)) nameCache.set(cacheKey, names);
     result.set(item.codigo, names);
   }
 
@@ -405,47 +529,27 @@ export async function getSimilarProductNames({ nombre, precioCuballama }) {
     return similarNameCache.get(cacheKey);
   }
 
-  const apiKey = process.env.GEMINI_API_KEY?.trim();
-  if (!apiKey) {
-    const result = { nombres: fallbackSimilarNames(nombre), source: "fallback" };
-    similarNameCache.set(cacheKey, result);
-    return result;
-  }
-
   const prompt = SIMILAR_PRODUCTS_PROMPT_TEMPLATE
     .replace("{{nombre}}", nombre)
     .replace("{{precio}}", precioCuballama == null ? "desconocido" : String(precioCuballama));
-  const url = `${API_BASE}/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
+  let result;
   try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.35, maxOutputTokens: 512 },
-      }),
+    const text = await callGemini({
+      prompt,
+      generationConfig: { temperature: 0.35, maxOutputTokens: 512 },
     });
-
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`Gemini API (${res.status}): ${errText.slice(0, 200)}`);
-    }
-
-    const data = await res.json();
-    const text =
-      data.candidates?.[0]?.content?.parts?.map((p) => p.text).join("") ?? "";
     const nombres = parseNamesFromText(text);
-    const result =
+    result =
       nombres.length === 0
-        ? { nombres: fallbackNames(nombre), source: "fallback" }
+        ? fallbackResult(fallbackSimilarNames(nombre), "Gemini no devolvió términos utilizables.")
         : { nombres, source: "gemini" };
-    similarNameCache.set(cacheKey, result);
-    return result;
   } catch (err) {
-    console.warn(`Gemini: no se pudieron generar productos similares (${err.message})`);
-    const result = { nombres: fallbackNames(nombre), source: "fallback" };
-    similarNameCache.set(cacheKey, result);
-    return result;
+    const geminiError = toGeminiError(err);
+    console.warn(`Gemini: no se pudieron generar productos similares (${geminiError.message})`);
+    result = fallbackResult(fallbackSimilarNames(nombre), geminiError.motivo);
   }
+
+  if (isCacheable(result)) similarNameCache.set(cacheKey, result);
+  return result;
 }

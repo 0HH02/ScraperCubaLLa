@@ -19,7 +19,9 @@ playwright install chromium
 | `run_scraper.py` | Punto de entrada: scraping completo o por fases |
 | `cuballama_scraper.py` | Lógica de navegación y extracción con Playwright |
 | `db.py` | Esquema SQLite y operaciones de persistencia |
+| `price_utils.py` | Interpreta importe y moneda de los precios en texto |
 | `settings.py` | URLs, timeouts y rutas por defecto |
+| `test_scraper.py` | Pruebas de persistencia y de lectura de precios |
 | `discover_stores.py` | Herramienta de exploración (navegador visible) para listar tiendas |
 | `import_stores.py` | Importa tiendas desde `discovered_stores.json` a la BD |
 | `run_pipeline.py` | Pipeline automático completo (dependencias → scrape → GitHub) |
@@ -70,11 +72,29 @@ En Windows, macOS y Linux el pipeline hará lo siguiente, mostrando el progreso 
 3. **Modo de ejecución** — Pregunta qué quieres hacer:
    - **[1] Nueva ejecución** — Borra todas las tiendas y productos de la BD y empieza de cero (pide confirmación si ya hay datos).
    - **[2] Continuar** — Conserva la BD. Omite el scrape de la lista de tiendas. Solo scrapea productos de tiendas **no visitadas** (`scrape_completada = 0`), empezando por la primera pendiente.
+   - **[3] Actualizar precios** — Revisita **todas** las tiendas sin borrar nada: refresca los precios que hayan cambiado y marca como inactivos los anuncios que ya no aparecen.
 4. **Tiendas** — Solo en modo nueva: recorre la web y guarda tiendas (`--solo-tiendas --headed`).
 5. **Productos** — Scrapea productos de tiendas pendientes (`--solo-productos --headed`).
 6. **GitHub** — Hace commit y `git push` de todos los cambios, **incluida la base de datos**.
 
-Requisitos adicionales para el paso 5: tener [Git](https://git-scm.com/) instalado y acceso configurado al remoto (`git push` sin pedir credenciales, o un gestor de credenciales ya configurado).
+Requisitos adicionales para el paso 6: tener [Git](https://git-scm.com/) instalado y acceso configurado al remoto (`git push` sin pedir credenciales, o un gestor de credenciales ya configurado).
+
+### Cómo se guardan los datos
+
+- **Los precios se actualizan en cada pasada.** Un producto ya conocido no se ignora: se refrescan precio, nombre y descripción, y se anota la fecha en que se vio por última vez.
+- **Nada se borra.** Los anuncios que dejan de aparecer en su tienda pasan a `Activo = 0`; el analizador web los excluye pero el histórico se conserva.
+- **Una lectura parcial no destruye datos.** Si una pasada no consigue leer el precio, se mantiene el último conocido.
+- **Una tienda que devuelve 0 productos queda pendiente**, porque casi siempre significa que la página no cargó. Se reintenta con la opción [2].
+- **El importe y la moneda se guardan aparte del texto** (`Precio_Valor`, `Precio_Moneda`), para que la web no tenga que reinterpretar cadenas como `$1,299.00` o `400 CUP`.
+
+El esquema se migra solo: al abrir una base antigua se añaden las columnas nuevas y se rellenan a partir del precio en texto.
+
+## Pruebas
+
+```bash
+cd scraper
+python -m unittest
+```
 
 ```bash
 # Equivalente manual desde la terminal

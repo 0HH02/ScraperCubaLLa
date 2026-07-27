@@ -1,0 +1,18 @@
+[Unit]
+Description=Analizador de precios Cuballama
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/cuballama
+EnvironmentFile=/opt/cuballama/.env
+ExecStart=/usr/bin/node server/index.js
+Restart=always
+RestartSec=5
+# Evita que un fallo puntual deje el servicio caído.
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

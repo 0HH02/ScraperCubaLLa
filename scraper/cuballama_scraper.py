@@ -347,8 +347,9 @@ def _menu_item_to_product(item: dict[str, Any]) -> dict[str, Any]:
 
     precio: str | None = None
     if item.get("price") is not None:
-        currency = (item.get("currency") or "USD").strip()
-        precio = f"${item['price']} {currency}"
+        currency = (item.get("currency") or "USD").strip().upper()
+        simbolo = "$" if currency in ("USD", "MLC") else ""
+        precio = f"{simbolo}{item['price']} {currency}".strip()
 
     precio_por_magnitud = (item.get("priceByMeasure") or "").strip() or None
 
@@ -475,7 +476,7 @@ def run_scraper(
             playwright, headless=headless
         )
         try:
-            with db.get_connection(db_path) as conn:
+            with db.open_db(db_path) as conn:
                 if not solo_productos:
                     tiendas = scrape_tiendas(page)
                     ins, ign = db.upsert_tiendas(conn, tiendas)
@@ -495,24 +496,49 @@ def run_scraper(
                         logger.info("Scrapeando tienda: %s (%s)", nombre, link)
                         try:
                             productos = scrape_productos_tienda(page, link)
-                            nuevos = db.insert_productos(
-                                conn, id_tienda, productos
-                            )
-                            db.marcar_tienda_completada(conn, id_tienda)
-                            logger.info(
-                                "  → %d productos nuevos (%d total en página)",
-                                nuevos,
-                                len(productos),
-                            )
                         except Exception as exc:
-                            logger.error(
-                                "Error en tienda %s: %s", nombre, exc
+                            logger.error("Error en tienda %s: %s", nombre, exc)
+                            db.registrar_scrape_fallido(conn, id_tienda)
+                            page.wait_for_timeout(settings.PAUSA_ENTRE_TIENDAS_MS)
+                            continue
+
+                        if not productos:
+                            # Una tienda sin productos casi siempre significa que
+                            # la página no cargó, no que esté vacía. Se deja
+                            # pendiente para reintentarla en la próxima pasada.
+                            logger.warning(
+                                "  → 0 productos en %s; queda pendiente para reintentar",
+                                nombre,
                             )
+                            db.registrar_scrape_fallido(conn, id_tienda)
+                            page.wait_for_timeout(settings.PAUSA_ENTRE_TIENDAS_MS)
+                            continue
+
+                        resultado = db.upsert_productos(conn, id_tienda, productos)
+                        retirados = db.desactivar_no_vistos(
+                            conn, id_tienda, [p["link"] for p in productos]
+                        )
+                        db.marcar_tienda_completada(conn, id_tienda, len(productos))
+                        logger.info(
+                            "  → %d nuevos, %d actualizados (%d con precio distinto), "
+                            "%d retirados — %d en la página",
+                            resultado["nuevos"],
+                            resultado["actualizados"],
+                            resultado["precios_cambiados"],
+                            retirados,
+                            len(productos),
+                        )
                         page.wait_for_timeout(settings.PAUSA_ENTRE_TIENDAS_MS)
 
                 total_t = db.contar_tiendas(conn)
                 total_p = db.contar_productos(conn)
-                logger.info("Resumen BD: %d tiendas, %d productos", total_t, total_p)
+                total_hist = db.contar_productos(conn, solo_activos=False)
+                logger.info(
+                    "Resumen BD: %d tiendas, %d productos activos (%d históricos)",
+                    total_t,
+                    total_p,
+                    total_hist,
+                )
         finally:
             context.close()
             browser.close()

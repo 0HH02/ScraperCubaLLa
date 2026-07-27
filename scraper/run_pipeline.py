@@ -243,14 +243,14 @@ def step_check_and_install_deps(python: str) -> None:
 
 
 def step_choose_execution_mode() -> str:
-    """Pregunta si nueva ejecución (borra todo) o continuar la última."""
+    """Pregunta si empezar de cero, continuar la última o refrescar precios."""
     print()
     _line("═")
     print(_c("  MODO DE EJECUCIÓN", MAGENTA + BOLD))
     _line("═")
     print()
 
-    with db.get_connection(DB_PATH) as conn:
+    with db.open_db(DB_PATH) as conn:
         n_tiendas = db.contar_tiendas(conn)
         n_productos = db.contar_productos(conn)
         visitadas = db.contar_tiendas_visitadas(conn)
@@ -267,20 +267,35 @@ def step_choose_execution_mode() -> str:
             _c(f"       Siguiente tienda pendiente: {primera['Nombre']}", DIM)
         )
     print()
+    print(_c("  [3]  Actualizar precios", BOLD))
+    print(_c("       Revisita todas las tiendas: refresca precios y retira", DIM))
+    print(_c("       los anuncios que ya no existen. No borra el histórico.", DIM))
+    print()
 
     if n_tiendas > 0:
         print(_c("  Estado actual de la BD:", DIM))
         _sub(f"Tiendas: {n_tiendas}  |  Visitadas: {visitadas}  |  Pendientes: {len(pendientes)}")
-        _sub(f"Productos: {n_productos}")
+        _sub(f"Productos activos: {n_productos}")
         print()
 
     while True:
         try:
             choice = input(
-                _c("  Elige una opción [1/2]: ", CYAN + BOLD)
+                _c("  Elige una opción [1/2/3]: ", CYAN + BOLD)
             ).strip()
         except EOFError:
             choice = "2" if n_tiendas > 0 else "1"
+
+        if choice == "3":
+            if n_tiendas == 0:
+                _warn("No hay tiendas en la BD; se usará nueva ejecución.")
+                return "fresh"
+            with db.open_db(DB_PATH) as conn:
+                reabiertas = db.reabrir_todas_las_tiendas(conn)
+            print()
+            _ok("Modo seleccionado: ACTUALIZAR precios")
+            _info(f"{reabiertas} tienda(s) marcadas para revisitar")
+            return "refresh"
 
         if choice == "1":
             if n_tiendas > 0 or n_productos > 0:
@@ -315,7 +330,7 @@ def step_choose_execution_mode() -> str:
             )
             return "continue"
 
-        _err("Opción no válida. Escribe 1 o 2.")
+        _err("Opción no válida. Escribe 1, 2 o 3.")
 
 
 def step_ensure_database() -> None:
@@ -331,7 +346,7 @@ def step_ensure_database() -> None:
     db.init_db(DB_PATH)
     _ok("Esquema de base de datos verificado")
 
-    with db.get_connection(DB_PATH) as conn:
+    with db.open_db(DB_PATH) as conn:
         n_tiendas = db.contar_tiendas(conn)
         n_productos = db.contar_productos(conn)
         pendientes = len(db.get_tiendas_pendientes(conn))
@@ -359,8 +374,9 @@ def _setup_scraper_logging() -> None:
 
 
 def step_scrape_stores(mode: str) -> None:
-    if mode == "continue":
-        _step_header(3, "Scraping de TIENDAS — omitido (modo continuar)")
+    if mode in ("continue", "refresh"):
+        etiqueta = "continuar" if mode == "continue" else "actualizar precios"
+        _step_header(3, f"Scraping de TIENDAS — omitido (modo {etiqueta})")
         _info("Las tiendas ya guardadas se conservan sin cambios.")
         _info("Puedes añadir tiendas nuevas ejecutando una nueva ejecución [1].")
         return
@@ -375,7 +391,7 @@ def step_scrape_stores(mode: str) -> None:
     run_scraper(DB_PATH, solo_tiendas=True, solo_productos=False, headless=False)
     elapsed = time.perf_counter() - t0
 
-    with db.get_connection(DB_PATH) as conn:
+    with db.open_db(DB_PATH) as conn:
         total = db.contar_tiendas(conn)
 
     print()
@@ -386,7 +402,7 @@ def step_scrape_products(mode: str) -> None:
     _step_header(4, "Scraping de PRODUCTOS (navegador visible)")
     _info("Modo: --solo-productos --headed")
 
-    with db.get_connection(DB_PATH) as conn:
+    with db.open_db(DB_PATH) as conn:
         filas = db.get_tiendas_pendientes(conn)
         pendientes = len(filas)
         visitadas = db.contar_tiendas_visitadas(conn)
@@ -398,9 +414,12 @@ def step_scrape_products(mode: str) -> None:
         )
         if filas:
             _info(f"Empezando por: {filas[0]['Nombre']}")
+    elif mode == "refresh":
+        _info(f"Actualizar precios: se revisitarán las {pendientes} tienda(s)")
 
     if pendientes == 0:
         _warn("No hay tiendas pendientes; se omitirá el scraping de productos.")
+        _info("Usa la opción [3] para revisitar todas las tiendas y refrescar precios.")
         return
 
     _info(f"Tiendas por procesar: {pendientes}")
@@ -412,12 +431,21 @@ def step_scrape_products(mode: str) -> None:
     run_scraper(DB_PATH, solo_tiendas=False, solo_productos=True, headless=False)
     elapsed = time.perf_counter() - t0
 
-    with db.get_connection(DB_PATH) as conn:
+    with db.open_db(DB_PATH) as conn:
         total_p = db.contar_productos(conn)
+        total_hist = db.contar_productos(conn, solo_activos=False)
         aún_pend = len(db.get_tiendas_pendientes(conn))
 
     print()
-    _ok(f"Productos en BD: {total_p} | Pendientes restantes: {aún_pend} ({elapsed:.0f}s)")
+    _ok(
+        f"Productos activos: {total_p} (de {total_hist} históricos) | "
+        f"Pendientes restantes: {aún_pend} ({elapsed:.0f}s)"
+    )
+    if aún_pend:
+        _warn(
+            f"{aún_pend} tienda(s) no devolvieron productos. Vuelve a ejecutar "
+            "la opción [2] para reintentarlas."
+        )
 
 
 def step_push_to_github() -> None:
@@ -428,6 +456,12 @@ def step_push_to_github() -> None:
 
     if not (PROJECT_ROOT / ".git").is_dir():
         raise RuntimeError("Este directorio no es un repositorio Git.")
+
+    # Cada ejecución añade una copia completa de la BD al historial: conviene
+    # que sea lo más pequeña posible.
+    _info("Compactando la base de datos...")
+    antes, despues = db.compactar(DB_PATH)
+    _ok(f"BD compactada: {antes / 1024:.0f} KB → {despues / 1024:.0f} KB")
 
     _info("Añadiendo archivos al staging...")
     subprocess.run(["git", "add", "-A"], cwd=PROJECT_ROOT, check=True)

@@ -1,6 +1,8 @@
 __pycache__/
 *.py[cod]
 *.db
+# La BD del mercado sí se versiona: es el dato que consume la web.
+!cuballama_market.db
 scraper/discovered_stores.json
 scraper/discovered_api_urls.txt
 scraper/discovered_stores_nuevo.json

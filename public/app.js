@@ -226,7 +226,7 @@ function upsertRow(updatedRow) {
   return allRows[idx] || prepared;
 }
 
-async function reanalyzeCurrentRowWithTags(row, tags, statusMessage) {
+async function reanalyzeCurrentRowWithTags(row, tags, statusMessage, successMessage) {
   setTagStatus(statusMessage);
   tagInput.disabled = true;
   similarBtn.disabled = true;
@@ -237,9 +237,11 @@ async function reanalyzeCurrentRowWithTags(row, tags, statusMessage) {
     currentDetailCodigo = prepared.codigo;
     renderDetail(prepared);
     refreshDashboard();
-    setTagStatus("Etiqueta aplicada y comparativa actualizada.", "ok");
+    setTagStatus(successMessage || "Etiqueta aplicada y comparativa actualizada.", "ok");
+    return true;
   } catch (err) {
     setTagStatus(err.message, "error");
+    return false;
   } finally {
     tagInput.disabled = false;
     similarBtn.disabled = false;
@@ -247,22 +249,23 @@ async function reanalyzeCurrentRowWithTags(row, tags, statusMessage) {
   }
 }
 
-async function addSearchTag(row, rawTag, source = "manual") {
+async function addSearchTag(row, rawTag, { source = "manual", aviso = "" } = {}) {
   const tag = String(rawTag || "").trim().toLowerCase();
   if (!tag) {
     setTagStatus("Escribe una etiqueta antes de añadirla.", "error");
-    return;
+    return false;
   }
   if (hasSearchTag(row, tag)) {
     setTagStatus("Esa etiqueta ya existe para este producto.", "error");
-    return;
+    return false;
   }
 
   const tags = [...(row.nombresBusqueda || []), tag];
-  await reanalyzeCurrentRowWithTags(
+  return reanalyzeCurrentRowWithTags(
     row,
     tags,
     source === "ia" ? "Añadiendo etiqueta sugerida por IA…" : "Añadiendo etiqueta manual…",
+    aviso ? `Etiqueta aplicada. ${aviso}` : "",
   );
 }
 
@@ -698,11 +701,22 @@ async function suggestTagWithAi() {
       precioCuballama: row.precioCuballama,
       existingTags: getExistingTags(row),
     });
+
+    // Cuando Gemini no responde el servidor devuelve términos automáticos:
+    // conviene decirlo para que la sugerencia no parezca de la IA.
+    const aviso =
+      data.fuenteNombresBusqueda === "gemini"
+        ? ""
+        : data.motivo || "Sugerencia automática: la IA no estaba disponible.";
+
     if (!data.tag) {
-      setTagStatus("La IA no sugirió etiquetas nuevas para este producto.", "error");
+      setTagStatus(
+        aviso || "La IA no sugirió etiquetas nuevas para este producto.",
+        "error",
+      );
       return;
     }
-    await addSearchTag(row, data.tag, "ia");
+    await addSearchTag(row, data.tag, { source: "ia", aviso });
   } catch (err) {
     setTagStatus(err.message, "error");
   } finally {

@@ -47,7 +47,7 @@ def main() -> int:
         return 1
 
     db.init_db(args.db)
-    with db.get_connection(args.db) as conn:
+    with db.open_db(args.db) as conn:
         insertadas, ignoradas = db.upsert_tiendas(conn, tiendas)
         total = db.contar_tiendas(conn)
 
