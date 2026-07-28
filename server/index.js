@@ -99,8 +99,22 @@ function writeAnalyzeEvent(res, payload) {
   res.write(`${JSON.stringify(payload)}\n`);
 }
 
+/** Evita que el navegador corte el stream si Gemini o el análisis tardan. */
+function startAnalyzeHeartbeat(res, stream) {
+  if (!stream) return () => {};
+  const timer = setInterval(() => {
+    if (res.writableEnded) return;
+    writeAnalyzeEvent(res, {
+      type: "heartbeat",
+      message: "El análisis sigue en curso…",
+    });
+  }, 10_000);
+  return () => clearInterval(timer);
+}
+
 app.post("/api/analyze", analyzeLimiter, upload.single("file"), async (req, res) => {
   const stream = req.query.stream === "1" || req.get("accept")?.includes("application/x-ndjson");
+  let stopHeartbeat = () => {};
 
   try {
     if (!req.file) {
@@ -116,9 +130,11 @@ app.post("/api/analyze", analyzeLimiter, upload.single("file"), async (req, res)
 
     if (stream) {
       res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
-      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("X-Accel-Buffering", "no");
       res.flushHeaders?.();
       writeAnalyzeEvent(res, { type: "progress", message: "Leyendo inventario desde el Excel…" });
+      stopHeartbeat = startAnalyzeHeartbeat(res, stream);
     }
 
     ensureFreshDatabase();
@@ -135,6 +151,7 @@ app.post("/api/analyze", analyzeLimiter, upload.single("file"), async (req, res)
       uploadedFile: req.file.originalname,
     };
 
+    stopHeartbeat();
     if (stream) {
       writeAnalyzeEvent(res, { type: "complete", ...payload });
       return res.end();
@@ -142,6 +159,7 @@ app.post("/api/analyze", analyzeLimiter, upload.single("file"), async (req, res)
 
     res.json(payload);
   } catch (err) {
+    stopHeartbeat();
     if (stream && !res.headersSent) {
       res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
     }

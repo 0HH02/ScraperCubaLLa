@@ -249,11 +249,16 @@ function parseCatalogNamesFromText(text, items) {
 }
 
 export class GeminiError extends Error {
-  constructor(message, { status = null, retryable = false, motivo, retryAfterMs = 0 } = {}) {
+  constructor(
+    message,
+    { status = null, retryable = false, abortBatches = false, motivo, retryAfterMs = 0 } = {},
+  ) {
     super(message);
     this.name = "GeminiError";
     this.status = status;
     this.retryable = retryable;
+    // Si es true, getCatalogSearchNames deja de llamar a Gemini y usa fallback.
+    this.abortBatches = abortBatches;
     this.motivo = motivo ?? message;
     this.retryAfterMs = retryAfterMs;
   }
@@ -268,11 +273,14 @@ function errorForStatus(status, detail, retryAfterHeader) {
   const base = `Gemini API (${status}): ${detail}`;
 
   if (status === 429) {
+    // En el free tier seguir reintentando lote tras lote solo alarga el análisis
+    // y el navegador corta el stream con "Network error".
     return new GeminiError(base, {
       status,
-      retryable: true,
+      retryable: false,
+      abortBatches: true,
       retryAfterMs,
-      motivo: "Gemini alcanzó su límite de peticiones. Inténtalo en unos minutos.",
+      motivo: "Gemini alcanzó su límite de peticiones. Se usarán términos automáticos.",
     });
   }
   if (status >= 500) {
@@ -321,10 +329,9 @@ function toGeminiError(err) {
 
 /**
  * Llama a Gemini con tiempo límite y reintentos.
- * Sin esto, un 429 o una red caída dejaban la petición colgada o degradaban a
- * fallback sin explicar el motivo.
+ * onHeartbeat mantiene vivo el stream del análisis mientras espera la API.
  */
-async function callGemini({ prompt, generationConfig }) {
+async function callGemini({ prompt, generationConfig, onHeartbeat }) {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) {
     throw new GeminiError("Falta GEMINI_API_KEY", { motivo: MOTIVO_NO_CONFIGURADO });
@@ -332,10 +339,19 @@ async function callGemini({ prompt, generationConfig }) {
 
   const url = `${API_BASE}/${encodeURIComponent(GEMINI_MODEL)}:generateContent`;
   let lastError = null;
+  const startedAt = Date.now();
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const heartbeat = setInterval(() => {
+      const secs = Math.round((Date.now() - startedAt) / 1000);
+      onHeartbeat?.(
+        attempt > 0
+          ? `Gemini sigue ocupado (reintento ${attempt}/${MAX_RETRIES}, ${secs}s)…`
+          : `Esperando respuesta de Gemini (${secs}s)…`,
+      );
+    }, 8_000);
 
     try {
       const res = await fetch(url, {
@@ -367,9 +383,13 @@ async function callGemini({ prompt, generationConfig }) {
       console.warn(
         `Gemini: reintento ${attempt + 1}/${MAX_RETRIES} en ${wait} ms (${lastError.message})`,
       );
+      onHeartbeat?.(
+        `Gemini no respondió a tiempo; reintento ${attempt + 1}/${MAX_RETRIES}…`,
+      );
       await sleep(wait);
     } finally {
       clearTimeout(timer);
+      clearInterval(heartbeat);
     }
   }
 
@@ -393,7 +413,7 @@ function chunkArray(items, size) {
   return chunks;
 }
 
-async function requestCatalogSearchNames(batch) {
+async function requestCatalogSearchNames(batch, onHeartbeat) {
   const productos = JSON.stringify(
     batch.map((item) => ({ codigo: item.codigo, nombre: item.nombre })),
     null,
@@ -402,6 +422,7 @@ async function requestCatalogSearchNames(batch) {
   const text = await callGemini({
     prompt: CATALOG_PROMPT_TEMPLATE.replace("{{productos}}", productos),
     generationConfig: { temperature: 0.2, maxOutputTokens: 8192 },
+    onHeartbeat,
   });
   return parseCatalogNamesFromText(text, batch);
 }
@@ -484,6 +505,8 @@ export async function getCatalogSearchNames(items, onProgress) {
 
   const parsed = new Map();
   let motivoFallo;
+  let timeoutsSeguidos = 0;
+
   for (let i = 0; i < batches.length; i++) {
     const batch = batches[i];
     const from = i * CATALOG_BATCH_SIZE + 1;
@@ -493,18 +516,39 @@ export async function getCatalogSearchNames(items, onProgress) {
     );
 
     try {
-      const batchNames = await requestCatalogSearchNames(batch);
+      const batchNames = await requestCatalogSearchNames(batch, onProgress);
       for (const [codigo, names] of batchNames) {
         parsed.set(codigo, names);
       }
+      timeoutsSeguidos = 0;
       onProgress?.(`Lote ${i + 1}/${batches.length} recibido.`);
     } catch (err) {
-      // Un lote fallido ya no cancela los siguientes: antes bastaba un 429 a
-      // mitad del catálogo para dejar el resto sin términos de Gemini.
       const geminiError = toGeminiError(err);
       motivoFallo = geminiError.motivo;
       console.warn(`Gemini: lote ${i + 1} falló (${geminiError.message})`);
-      onProgress?.(`Lote ${i + 1}/${batches.length}: ${geminiError.motivo} Se usarán términos automáticos.`);
+      onProgress?.(
+        `Lote ${i + 1}/${batches.length}: ${geminiError.motivo}`,
+      );
+
+      // Cuota agotada o error fatal: no tiene sentido quemar más minutos.
+      if (geminiError.abortBatches || geminiError.status === 429) {
+        onProgress?.(
+          "Se dejan de llamar a Gemini; el resto usará términos automáticos.",
+        );
+        break;
+      }
+
+      if (geminiError.motivo?.includes("tardó demasiado")) {
+        timeoutsSeguidos += 1;
+        if (timeoutsSeguidos >= 2) {
+          onProgress?.(
+            "Gemini no responde; el resto usará términos automáticos.",
+          );
+          break;
+        }
+      } else {
+        timeoutsSeguidos = 0;
+      }
 
       if (!geminiError.retryable && geminiError.status !== 400) {
         onProgress?.("Se cancelan las llamadas restantes a Gemini.");

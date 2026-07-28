@@ -12,11 +12,18 @@ export async function analyzeWithFile(file, tipoCambio, onProgress) {
   body.append("file", file);
   body.append("tipoCambio", tipoCambio);
 
-  const res = await fetch("/api/analyze?stream=1", {
-    method: "POST",
-    body,
-    headers: { Accept: "application/x-ndjson" },
-  });
+  let res;
+  try {
+    res = await fetch("/api/analyze?stream=1", {
+      method: "POST",
+      body,
+      headers: { Accept: "application/x-ndjson" },
+    });
+  } catch {
+    throw new Error(
+      "No se pudo conectar con el servidor. Revisa la red o vuelve a intentarlo.",
+    );
+  }
 
   if (!res.ok && !res.body) {
     let message = "Error al analizar el catálogo.";
@@ -35,31 +42,41 @@ export async function analyzeWithFile(file, tipoCambio, onProgress) {
   let result = null;
   let streamError = null;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
 
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      const evt = JSON.parse(trimmed);
-      if (evt.type === "progress" && evt.message) {
-        onProgress?.(evt.message);
-      } else if (evt.type === "complete") {
-        result = evt;
-      } else if (evt.type === "error") {
-        streamError = evt.error || "Error al analizar el catálogo.";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const evt = JSON.parse(trimmed);
+        if ((evt.type === "progress" || evt.type === "heartbeat") && evt.message) {
+          onProgress?.(evt.message);
+        } else if (evt.type === "complete") {
+          result = evt;
+        } else if (evt.type === "error") {
+          streamError = evt.error || "Error al analizar el catálogo.";
+        }
       }
     }
+  } catch (err) {
+    throw new Error(
+      err?.message?.includes("network") || err?.name === "TypeError"
+        ? "La conexión se cortó durante el análisis. Vuelve a intentarlo; si Gemini está sin cuota, el análisis usará términos automáticos."
+        : err.message || "Error de red durante el análisis.",
+    );
   }
 
   const tail = buffer.trim();
   if (tail) {
     const evt = JSON.parse(tail);
-    if (evt.type === "progress" && evt.message) onProgress?.(evt.message);
+    if ((evt.type === "progress" || evt.type === "heartbeat") && evt.message) {
+      onProgress?.(evt.message);
+    }
     if (evt.type === "complete") result = evt;
     if (evt.type === "error") streamError = evt.error;
   }
